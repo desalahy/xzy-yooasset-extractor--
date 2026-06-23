@@ -2,8 +2,6 @@
 
 这是一个本地研究和学习用的 YooAssets/Unity 资源解包工具。它会扫描 `XzyLauncher_Data/yoo` 目录，识别普通 UnityFS bundle，也能处理一种“文件末尾 16 字节作为 XOR key”的资源加密格式。
 
-仓库只应该包含脚本、文档和测试。不要把游戏文件、导出的图片、音频、模型、metadata dump、bundle 或其他商业资产提交到 GitHub。
-
 ## 安装
 
 推荐 Python 3.10 或更新版本。

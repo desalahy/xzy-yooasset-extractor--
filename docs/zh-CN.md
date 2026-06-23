@@ -12,18 +12,6 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-如果依赖已经安装在别的目录，可以这样传入：
-
-```bash
-python xzy_yooasset_extractor.py --deps-dir C:\path\to\site-packages ...
-```
-
-也可以设置环境变量：
-
-```bash
-set UNITYPY_DEPS_DIR=C:\path\to\site-packages
-```
-
 ## 先看有哪些包
 
 先列出本地 YooAssets 包，确认哪些包有 `BundleFiles`。

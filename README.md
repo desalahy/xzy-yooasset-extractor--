@@ -94,6 +94,29 @@ python xzy_yooasset_extractor.py ^
   --progress-every 20
 ```
 
+Export every local package with `BundleFiles`:
+
+```bash
+python xzy_yooasset_extractor.py ^
+  --game-root "E:\XZY\shengtianpc\10046\game" ^
+  --out "E:\XZY\AllAssets" ^
+  --limit 0 ^
+  --execute ^
+  --progress-every 20
+```
+
+For a full bundle-mode inventory without Unity object export:
+
+```bash
+python xzy_yooasset_extractor.py ^
+  --game-root "E:\XZY\shengtianpc\10046\game" ^
+  --out "E:\XZY\BundleIndex" ^
+  --limit 0 ^
+  --no-export ^
+  --execute ^
+  --progress-every 50
+```
+
 Classify/decrypt bundles without Unity object export:
 
 ```bash

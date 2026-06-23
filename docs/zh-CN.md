@@ -12,6 +12,7 @@
 - Unity bundle 结构学习
 - YooAssets 包结构分析
 - 记录和复现 tail-key XOR 解密流程
+- 批量导出本地已经存在的资源包
 
 不适合用于：
 
@@ -44,7 +45,7 @@ set UNITYPY_DEPS_DIR=C:\path\to\site-packages
 
 ## 快速使用
 
-列出本地 YooAssets 包：
+先列出本地 YooAssets 包，确认哪些包真的有 `BundleFiles`：
 
 ```bash
 python xzy_yooasset_extractor.py ^
@@ -52,7 +53,7 @@ python xzy_yooasset_extractor.py ^
   --list-packages
 ```
 
-先做 dry-run，不写文件：
+先做小样本 dry-run，不写文件：
 
 ```bash
 python xzy_yooasset_extractor.py ^
@@ -61,7 +62,57 @@ python xzy_yooasset_extractor.py ^
   --limit 2
 ```
 
-导出 UI 相关图片：
+## 全量导出所有包
+
+如果你想把本地 `yoo` 目录下所有有 `BundleFiles` 的包都扫描并导出，不要传 `--packages`，并把 `--limit` 设为 `0`：
+
+```bash
+python xzy_yooasset_extractor.py ^
+  --game-root "E:\XZY\shengtianpc\10046\game" ^
+  --out "E:\XZY\AllAssets" ^
+  --limit 0 ^
+  --execute ^
+  --progress-every 20
+```
+
+这条命令会尽量导出所有可被 UnityPy 读取的资源，包括但不限于：
+
+- UI 图片
+- BGM
+- 音效和语音
+- 贴图
+- 模型相关对象
+- 动画相关对象
+- 文本或二进制对象
+
+注意：全量导出可能非常大，也可能运行很久。建议先用 `--list-packages` 看包数量，再用少量包测试，确认没问题后再全量导出。
+
+## 全量分类但不导出对象
+
+如果你只想知道所有 bundle 的加密模式，不想导出图片、音频、模型，可以加 `--no-export`：
+
+```bash
+python xzy_yooasset_extractor.py ^
+  --game-root "E:\XZY\shengtianpc\10046\game" ^
+  --out "E:\XZY\BundleIndex" ^
+  --limit 0 ^
+  --no-export ^
+  --execute ^
+  --progress-every 50
+```
+
+这会生成：
+
+- `package_report.csv`
+- `bundles.csv`
+- `errors.json`
+- `summary.json`
+
+适合先做资源清点和解密模式确认。
+
+## 只导出 UI 相关资源
+
+如果你只关心 UI，推荐先导出 `Icon,Main,Spine`：
 
 ```bash
 python xzy_yooasset_extractor.py ^
@@ -73,7 +124,16 @@ python xzy_yooasset_extractor.py ^
   --progress-every 20
 ```
 
-只分类和解密，不用 UnityPy 导出对象：
+说明：
+
+- `Icon` 通常包含大量 UI 图标、活动图、多语言图。
+- `Main` 里常见 UI 图集、界面 prefab 相关对象。
+- `Spine` 里可能有 UI Spine 贴图、立绘相关贴图。
+- `Background` 如果只有清单没有 `BundleFiles`，就无法导出实际背景图。
+
+## 只分类和解密，不用 UnityPy 导出对象
+
+指定某个包，只分类和解密：
 
 ```bash
 python xzy_yooasset_extractor.py ^
@@ -83,12 +143,25 @@ python xzy_yooasset_extractor.py ^
   --execute
 ```
 
-保存解密后的 UnityFS bundle：
+## 保存解密后的 UnityFS bundle
+
+如果后续想用其他工具继续分析，可以加 `--keep-bundles` 保存解密后的 bundle：
 
 ```bash
 python xzy_yooasset_extractor.py ^
   --game-root "E:\XZY\shengtianpc\10046\game" ^
   --packages Icon ^
+  --keep-bundles ^
+  --execute
+```
+
+全量保存解密后的 bundle 也可以，但会占用更多磁盘：
+
+```bash
+python xzy_yooasset_extractor.py ^
+  --game-root "E:\XZY\shengtianpc\10046\game" ^
+  --out "E:\XZY\AllBundles" ^
+  --limit 0 ^
   --keep-bundles ^
   --execute
 ```
@@ -122,6 +195,8 @@ out/
 - `assets.csv`: Unity 对象级索引，包括类型、`path_id`、资源名、导出路径、状态。
 - `errors.json`: bundle 级错误。
 - `summary.json`: 本次运行摘要。
+
+如果全量导出后不知道某个文件来自哪里，先查 `assets.csv` 的 `output` 列，再看同一行的 `package`、`bundle_hash`、`type`、`path_id`。
 
 ## 解密规则
 

@@ -4,23 +4,6 @@
 
 仓库只应该包含脚本、文档和测试。不要把游戏文件、导出的图片、音频、模型、metadata dump、bundle 或其他商业素材提交到 GitHub。
 
-## 项目用途
-
-适合用于：
-
-- 本地资源清点
-- Unity bundle 结构学习
-- YooAssets 包结构分析
-- 记录和复现 tail-key XOR 解密流程
-- 批量导出本地已经存在的资源包
-
-不适合用于：
-
-- 通用 Unity 资源恢复
-- 下载缺失资源包
-- 绕过账号、服务器校验、DRM 或付费限制
-- 分发没有授权的游戏资源
-
 ## 安装
 
 推荐 Python 3.10 或更新版本。
@@ -45,7 +28,7 @@ set UNITYPY_DEPS_DIR=C:\path\to\site-packages
 
 ## 快速使用
 
-先列出本地 YooAssets 包，确认哪些包真的有 `BundleFiles`：
+列出本地 YooAssets 包，先确认哪些包真的有 `BundleFiles`：
 
 ```bash
 python xzy_yooasset_extractor.py ^
@@ -64,7 +47,7 @@ python xzy_yooasset_extractor.py ^
 
 ## 全量导出所有包
 
-如果你想把本地 `yoo` 目录下所有有 `BundleFiles` 的包都扫描并导出，不要传 `--packages`，并把 `--limit` 设为 `0`：
+不传 `--packages` 就会扫描所有包；`--limit 0` 表示不限制 bundle 数量。
 
 ```bash
 python xzy_yooasset_extractor.py ^
@@ -75,21 +58,13 @@ python xzy_yooasset_extractor.py ^
   --progress-every 20
 ```
 
-这条命令会尽量导出所有可被 UnityPy 读取的资源，包括但不限于：
-
-- UI 图片
-- BGM
-- 音效和语音
-- 贴图
-- 模型相关对象
-- 动画相关对象
-- 文本或二进制对象
+这会尽量导出所有 UnityPy 能读取的资源，例如 UI 图片、BGM、音效、语音、贴图、模型相关对象、动画相关对象、文本或二进制对象。
 
 注意：全量导出可能非常大，也可能运行很久。建议先用 `--list-packages` 看包数量，再用少量包测试，确认没问题后再全量导出。
 
 ## 全量分类但不导出对象
 
-如果你只想知道所有 bundle 的加密模式，不想导出图片、音频、模型，可以加 `--no-export`：
+如果只想知道所有 bundle 的加密模式，不想导出图片、音频、模型，可以加 `--no-export`：
 
 ```bash
 python xzy_yooasset_extractor.py ^
@@ -101,18 +76,9 @@ python xzy_yooasset_extractor.py ^
   --progress-every 50
 ```
 
-这会生成：
+这会生成 `package_report.csv`、`bundles.csv`、`errors.json`、`summary.json`，适合先做资源清点和解密模式确认。
 
-- `package_report.csv`
-- `bundles.csv`
-- `errors.json`
-- `summary.json`
-
-适合先做资源清点和解密模式确认。
-
-## 只导出 UI 相关资源
-
-如果你只关心 UI，推荐先导出 `Icon,Main,Spine`：
+## 只导出 UI 相关图片
 
 ```bash
 python xzy_yooasset_extractor.py ^
@@ -133,8 +99,6 @@ python xzy_yooasset_extractor.py ^
 
 ## 只分类和解密，不用 UnityPy 导出对象
 
-指定某个包，只分类和解密：
-
 ```bash
 python xzy_yooasset_extractor.py ^
   --game-root "E:\XZY\shengtianpc\10046\game" ^
@@ -144,8 +108,6 @@ python xzy_yooasset_extractor.py ^
 ```
 
 ## 保存解密后的 UnityFS bundle
-
-如果后续想用其他工具继续分析，可以加 `--keep-bundles` 保存解密后的 bundle：
 
 ```bash
 python xzy_yooasset_extractor.py ^

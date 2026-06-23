@@ -1,8 +1,8 @@
 # XZY YooAsset Extractor
 
-Chinese documentation is available in [docs/zh-CN.md](docs/zh-CN.md).
+中文-> [docs/zh-CN.md](docs/zh-CN.md).
 
-Local research tool for inspecting and exporting Unity/YooAssets bundles that use a tail-16-byte XOR stream key.
+Local research tool for inspecting and exporting Unity/YooAssets bundles.
 
 This repository contains code and documentation only. Do not commit game files, exported images, audio, models, metadata dumps, or any other copyrighted assets.
 

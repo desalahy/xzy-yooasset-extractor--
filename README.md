@@ -30,6 +30,7 @@ It is not a universal Unity extractor and it does not download missing bundles f
   - `Texture2D` and `Sprite` to PNG
   - `AudioClip` samples
   - selected raw/text objects
+- Filters export by output category (`ui`, `bgm`, `audio`, `models`, `effects`, and more) or by Unity object type.
 - Writes reproducible indexes:
   - `package_report.csv`
   - `bundles.csv`
@@ -88,7 +89,62 @@ Export UI-related packages:
 python xzy_yooasset_extractor.py ^
   --game-root "E:\XZY\shengtianpc\10046\game" ^
   --packages Icon,Main,Spine ^
+  --categories ui ^
   --out "E:\XZY\UI" ^
+  --limit 0 ^
+  --execute ^
+  --progress-every 20
+```
+
+Export BGM only:
+
+```bash
+python xzy_yooasset_extractor.py ^
+  --game-root "E:\XZY\shengtianpc\10046\game" ^
+  --packages Bgm ^
+  --categories bgm ^
+  --types AudioClip ^
+  --out "E:\XZY\BGM" ^
+  --limit 0 ^
+  --execute ^
+  --progress-every 20
+```
+
+Export sound effects and voice clips:
+
+```bash
+python xzy_yooasset_extractor.py ^
+  --game-root "E:\XZY\shengtianpc\10046\game" ^
+  --packages Se,Voice ^
+  --categories audio ^
+  --types AudioClip ^
+  --out "E:\XZY\Audio" ^
+  --limit 0 ^
+  --execute ^
+  --progress-every 20
+```
+
+Export model-related objects:
+
+```bash
+python xzy_yooasset_extractor.py ^
+  --game-root "E:\XZY\shengtianpc\10046\game" ^
+  --packages CharacterMesh,Art3D ^
+  --categories models,materials,textures ^
+  --out "E:\XZY\Models" ^
+  --limit 0 ^
+  --execute ^
+  --progress-every 20
+```
+
+Export effect-related objects:
+
+```bash
+python xzy_yooasset_extractor.py ^
+  --game-root "E:\XZY\shengtianpc\10046\game" ^
+  --packages BattlePacket,AnimationPacket,CharacterPerformance ^
+  --categories effects,animation,materials,textures,prefabs ^
+  --out "E:\XZY\Effects" ^
   --limit 0 ^
   --execute ^
   --progress-every 20
@@ -104,6 +160,8 @@ python xzy_yooasset_extractor.py ^
   --execute ^
   --progress-every 20
 ```
+
+`--progress-every 20` only controls logging. It prints one progress line after every 20 processed bundles. It does not limit the export count and does not change exported files. Use `--progress-every 0` to disable progress logs.
 
 For a full bundle-mode inventory without Unity object export:
 
@@ -137,6 +195,18 @@ python xzy_yooasset_extractor.py ^
   --execute
 ```
 
+## Windows Batch Examples
+
+The `examples/` directory contains double-clickable batch files. Edit `GAME_ROOT` and `OUT_DIR` inside each file before running:
+
+| File | Purpose |
+| --- | --- |
+| `examples/extract_all_windows.bat` | Export all local packages with bundle files. |
+| `examples/extract_ui_windows.bat` | Export UI images. |
+| `examples/extract_bgm_windows.bat` | Export BGM AudioClip samples. |
+| `examples/extract_models_windows.bat` | Export model-related objects, materials, and textures. |
+| `examples/extract_effects_windows.bat` | Export effect-related objects, animation data, materials, textures, and prefabs. |
+
 ## Output Layout
 
 ```text
@@ -154,6 +224,7 @@ out/
     audio/
     bgm/
     models/
+    effects/
     animation/
     prefabs/
     text/
@@ -168,14 +239,24 @@ out/
 | --- | --- |
 | `--game-root` | Game root containing `XzyLauncher_Data/yoo`. |
 | `--yoo-root` | Direct YooAssets root path. Overrides `--game-root`. |
-| `--packages` | Comma-separated package names, for example `Icon,Main,Spine`. |
-| `--limit` | Maximum bundle count. `0` means all bundles. |
+| `--out` | Output directory. Defaults to `xzy_assets_out`. |
+| `--packages` | Comma-separated package names, for example `Icon,Main,Spine`. Empty means all packages. |
+| `--categories` | Comma-separated output categories to export, for example `ui,bgm,models,effects`. Empty means all categories. Valid categories: `ui`, `bgm`, `audio`, `models`, `effects`, `animation`, `prefabs`, `text`, `textures`, `materials`, `raw`, `other`. |
+| `--types` | Comma-separated Unity object type names to export, for example `Texture2D,Sprite,AudioClip`. Empty means all types. |
+| `--limit` | Maximum bundle count. Defaults to `30`; `0` means all bundles. |
 | `--execute` | Actually write files. Without this flag the command is a dry-run. |
 | `--no-export` | Classify/decrypt bundles but skip UnityPy object export. |
 | `--keep-bundles` | Save decrypted UnityFS bundles under `decrypted_bundles/`. |
-| `--progress-every` | Print progress after every N bundles. |
-| `--ui-packages` | Packages whose `Texture2D` and `Sprite` objects go under `assets/ui`. |
 | `--deps-dir` | Optional dependency directory containing UnityPy. |
+| `--progress-every` | Print progress after every N processed bundles. Defaults to `25`; use `0` to disable progress logs. |
+| `--list-packages` | Print the package report and exit without processing bundles. |
+| `--fail-on-error` | Return exit code `2` when bundle-level errors are found. Useful for batch scripts or CI. |
+| `--ui-packages` | Packages whose `Texture2D` and `Sprite` objects go under `assets/ui`. Default: `Icon,Background,Main,Spine`. |
+| `--model-packages` | Packages grouped under `assets/models`. Default: `CharacterMesh,Art3D`. |
+| `--effects-packages` | Packages grouped under `assets/effects`. Default includes `BattlePacket`. |
+| `--animation-packages` | Packages grouped under `assets/animation` for non-image objects. Default includes `Spine`, `AnimationPacket`, `CharacterTimeline`, `CharacterController`, and `CharacterPerformance`. |
+
+`--packages` decides which YooAssets package folders are scanned. `--categories` decides which classified output groups are written. `--types` is a lower-level Unity object type filter.
 
 ## Background Package Note
 

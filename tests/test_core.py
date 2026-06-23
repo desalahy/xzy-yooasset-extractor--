@@ -87,14 +87,70 @@ class CoreExtractorTests(unittest.TestCase):
             execute=False,
             keep_bundles=False,
             no_export=False,
+            categories=None,
+            types=None,
             ui_packages={"icon", "background", "main", "spine"},
             model_packages={"charactermesh", "art3d"},
+            effects_packages={"effect"},
             animation_packages={"spine"},
         )
 
         self.assertEqual(extractor.category_for_type("Texture2D", "sheet", "Spine", options), "ui")
         self.assertEqual(extractor.category_for_type("TextAsset", "skeleton", "Spine", options), "animation")
         self.assertEqual(extractor.category_for_type("Mesh", "body", "CharacterMesh", options), "models")
+
+    def test_category_rules_include_audio_and_effects(self) -> None:
+        options = extractor.ExportOptions(
+            out_root=Path("out"),
+            execute=False,
+            keep_bundles=False,
+            no_export=False,
+            categories=None,
+            types=None,
+            ui_packages={"icon", "background", "main", "spine"},
+            model_packages={"charactermesh", "art3d"},
+            effects_packages={"battlepacket"},
+            animation_packages={"spine"},
+        )
+
+        self.assertEqual(extractor.category_for_type("AudioClip", "opening_theme", "Bgm", options), "bgm")
+        self.assertEqual(extractor.category_for_type("AudioClip", "click", "Se", options), "audio")
+        self.assertEqual(extractor.category_for_type("ParticleSystem", "hit_spark", "BattlePacket", options), "effects")
+
+    def test_export_filter_status_checks_category_and_type(self) -> None:
+        options = extractor.ExportOptions(
+            out_root=Path("out"),
+            execute=False,
+            keep_bundles=False,
+            no_export=False,
+            categories={"bgm"},
+            types={"audioclip"},
+            ui_packages={"icon", "background", "main", "spine"},
+            model_packages={"charactermesh", "art3d"},
+            effects_packages={"effect"},
+            animation_packages={"spine"},
+        )
+
+        self.assertEqual(extractor.export_filter_status("ui", "Texture2D", options), "skipped_category")
+        self.assertEqual(extractor.export_filter_status("bgm", "Texture2D", options), "skipped_type")
+        self.assertEqual(extractor.export_filter_status("bgm", "AudioClip", options), "")
+
+    def test_category_is_enabled_handles_raw_outputs(self) -> None:
+        options = extractor.ExportOptions(
+            out_root=Path("out"),
+            execute=False,
+            keep_bundles=False,
+            no_export=False,
+            categories={"ui"},
+            types=None,
+            ui_packages={"icon", "background", "main", "spine"},
+            model_packages={"charactermesh", "art3d"},
+            effects_packages={"effect"},
+            animation_packages={"spine"},
+        )
+
+        self.assertTrue(extractor.category_is_enabled("ui", options))
+        self.assertFalse(extractor.category_is_enabled("raw", options))
 
 
 if __name__ == "__main__":

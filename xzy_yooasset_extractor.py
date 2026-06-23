@@ -16,6 +16,20 @@ from typing import Any, Iterable
 
 
 UNITY_MAGICS = (b"UnityFS", b"UnityRaw", b"UnityWeb")
+OUTPUT_CATEGORIES = {
+    "ui",
+    "bgm",
+    "audio",
+    "models",
+    "effects",
+    "animation",
+    "prefabs",
+    "text",
+    "textures",
+    "materials",
+    "raw",
+    "other",
+}
 
 ASSET_FIELDS = [
     "package",
@@ -68,8 +82,11 @@ class ExportOptions:
     execute: bool
     keep_bundles: bool
     no_export: bool
+    categories: set[str] | None
+    types: set[str] | None
     ui_packages: set[str]
     model_packages: set[str]
+    effects_packages: set[str]
     animation_packages: set[str]
     unitypy: Any | None = None
 
@@ -233,29 +250,47 @@ def category_for_type(type_name: str, asset_name: str, package: str, options: Ex
         return "bgm"
     if package_l in ("voice", "se"):
         return "audio"
-    if package_l in options.ui_packages and package_l not in options.animation_packages:
-        return "ui"
-    if package_l in options.model_packages:
-        return "models"
-    if package_l in options.animation_packages:
-        return "animation"
-    if tn in ("texture2d", "sprite"):
-        return "textures"
     if tn == "audioclip":
         if any(key in name for key in ("bgm", "music", "theme")):
             return "bgm"
         return "audio"
+    if tn in ("texture2d", "sprite"):
+        return "textures"
     if tn == "mesh":
         return "models"
-    if tn in ("gameobject", "transform", "recttransform", "monobehaviour", "canvasrenderer"):
-        return "prefabs"
-    if tn in ("textasset", "monoscript", "shader"):
-        return "text"
-    if tn in ("animationclip", "animatorcontroller", "runtimeanimatorcontroller", "animator", "avatar"):
-        return "animation"
     if tn == "material":
         return "materials"
+    if tn in ("particlesystem", "particlesystemrenderer", "visualeffect", "vfxrenderer", "trailrenderer", "linerenderer"):
+        return "effects"
+    if any(key in name for key in ("effect", "effects", "vfx", "fx", "particle")):
+        return "effects"
+    if tn in ("animationclip", "animatorcontroller", "runtimeanimatorcontroller", "animator", "avatar"):
+        return "animation"
+    if tn in ("gameobject", "transform", "recttransform", "monobehaviour", "canvasrenderer"):
+        return "prefabs"
+    if package_l in options.ui_packages and package_l not in options.animation_packages:
+        return "ui"
+    if package_l in options.effects_packages:
+        return "effects"
+    if package_l in options.model_packages:
+        return "models"
+    if package_l in options.animation_packages:
+        return "animation"
+    if tn in ("textasset", "monoscript", "shader"):
+        return "text"
     return "other"
+
+
+def export_filter_status(category: str, type_name: str, options: ExportOptions) -> str:
+    if options.categories and category not in options.categories:
+        return "skipped_category"
+    if options.types and type_name.lower() not in options.types:
+        return "skipped_type"
+    return ""
+
+
+def category_is_enabled(category: str, options: ExportOptions) -> bool:
+    return not options.categories or category in options.categories
 
 
 def reserve_output_path(ctx: ExportContext, path: Path) -> Path:
@@ -335,6 +370,9 @@ def export_object(obj: Any, bundle: BundleInput, ctx: ExportContext) -> list[dic
         path_id = getattr(obj, "path_id", "")
         asset_name = getattr(data, "name", "") or f"{type_name}_{path_id}"
         category = category_for_type(type_name, asset_name, bundle.package, options)
+        skip_status = export_filter_status(category, type_name, options)
+        if skip_status:
+            return [row_for(bundle, obj, type_name, asset_name, category, None, skip_status, out_root)]
 
         if type_name == "Texture2D":
             try:
@@ -407,6 +445,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--yoo-root", default="", help="Direct path to the YooAssets root. Overrides --game-root.")
     parser.add_argument("--out", default="xzy_assets_out", help="Output directory.")
     parser.add_argument("--packages", default="", help="Comma-separated package names, for example Icon,Main,Spine.")
+    parser.add_argument("--categories", default="", help="Comma-separated output categories to export, for example ui,bgm,models,effects. Empty means all categories.")
+    parser.add_argument("--types", default="", help="Comma-separated Unity object type names to export, for example Texture2D,Sprite,AudioClip. Empty means all types.")
     parser.add_argument("--limit", type=int, default=30, help="Maximum bundles to process. Use 0 for all.")
     parser.add_argument("--execute", action="store_true", help="Write exported files and index files. Without this, run as dry-run.")
     parser.add_argument("--no-export", action="store_true", help="Classify/decrypt bundles only; skip UnityPy object export.")
@@ -417,6 +457,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fail-on-error", action="store_true", help="Return exit code 2 when bundle-level errors are found.")
     parser.add_argument("--ui-packages", default="Icon,Background,Main,Spine", help="Packages whose Texture2D/Sprite outputs should be grouped under assets/ui.")
     parser.add_argument("--model-packages", default="CharacterMesh,Art3D", help="Packages grouped under assets/models.")
+    parser.add_argument("--effects-packages", default="BattlePacket,Effect,Effects,Vfx,VFX,Fx", help="Packages grouped under assets/effects.")
     parser.add_argument(
         "--animation-packages",
         default="Spine,AnimationPacket,CharacterTimeline,CharacterController,CharacterPerformance",
@@ -433,6 +474,13 @@ def main() -> int:
     yoo_root = resolve_yoo_root(args.game_root, args.yoo_root)
     out_root = Path(args.out).expanduser().resolve()
     packages = parse_csv(args.packages)
+    categories = parse_csv_lower(args.categories) if args.categories else None
+    types = parse_csv_lower(args.types) if args.types else None
+
+    if categories:
+        unknown_categories = categories - OUTPUT_CATEGORIES
+        if unknown_categories:
+            parser.error(f"unknown --categories value(s): {', '.join(sorted(unknown_categories))}")
 
     if not yoo_root.exists():
         raise SystemExit(f"YooAssets root not found: {yoo_root}")
@@ -451,8 +499,11 @@ def main() -> int:
         execute=args.execute,
         keep_bundles=args.keep_bundles,
         no_export=args.no_export,
+        categories=categories,
+        types=types,
         ui_packages=parse_csv_lower(args.ui_packages),
         model_packages=parse_csv_lower(args.model_packages),
+        effects_packages=parse_csv_lower(args.effects_packages),
         animation_packages=parse_csv_lower(args.animation_packages),
         unitypy=unitypy,
     )
@@ -492,8 +543,9 @@ def main() -> int:
                     for obj in env.objects:
                         asset_rows.extend(export_object(obj, bundle, ctx))
             elif bundle.unity_bytes:
-                target = out_root / "raw" / bundle.package / f"{bundle.hash_name}.bin"
-                write_bytes(target, bundle.unity_bytes, args.execute)
+                if category_is_enabled("raw", options):
+                    target = out_root / "raw" / bundle.package / f"{bundle.hash_name}.bin"
+                    write_bytes(target, bundle.unity_bytes, args.execute)
 
         except Exception as exc:
             errors.append(
@@ -520,6 +572,8 @@ def main() -> int:
         "yoo_root": str(yoo_root),
         "out": str(out_root),
         "packages": sorted(packages) if packages else "all",
+        "categories": sorted(categories) if categories else "all",
+        "types": sorted(types) if types else "all",
         "processed_bundles": processed,
         "asset_rows": len(asset_rows),
         "errors": len(errors),

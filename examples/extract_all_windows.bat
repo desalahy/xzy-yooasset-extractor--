@@ -15,6 +15,7 @@ set OUT_DIR=E:\XZY\AllAssets
   --game-root "%GAME_ROOT%" ^
   --out "%OUT_DIR%" ^
   --limit 0 ^
+  --copy-rawfiles ^
   --execute ^
   --progress-every 1 ^
   --progress-style bar

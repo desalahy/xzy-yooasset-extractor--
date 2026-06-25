@@ -1,0 +1,266 @@
+from __future__ import annotations
+
+import argparse
+import json
+import time
+import traceback
+from collections import Counter
+from pathlib import Path
+from typing import Any
+
+from .bundle import classify_bundle
+from .constants import ASSET_FIELDS, BUNDLE_FIELDS, MANIFEST_REF_FIELDS, OUTPUT_CATEGORIES, PACKAGE_FIELDS
+from .discovery import iter_bundle_files, iter_package_roots, iter_raw_files, package_report_row, resolve_yoo_roots
+from .exporter import (
+    category_is_enabled,
+    copy_file,
+    export_object,
+    import_unitypy,
+    load_unity_env,
+    rawfile_output_path,
+    rawfile_row,
+    write_bytes,
+)
+from .manifest import build_manifest_index, manifest_match_for_bundle
+from .models import ExportContext, ExportOptions, YooRoot
+from .progress import ProgressReporter
+from .utils import parse_csv, parse_csv_lower, write_csv
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Decrypt and export local YooAssets/Unity asset bundles that use a tail-16 XOR key.",
+    )
+    parser.add_argument("--game-root", default="", help="Game root containing XzyLauncher_Data. Scans hot-update yoo and StreamingAssets/yoo by default.")
+    parser.add_argument("--yoo-root", default="", help="Direct path to one YooAssets root. Overrides --game-root.")
+    parser.add_argument(
+        "--source-layout",
+        choices=("all", "hot", "streaming"),
+        default="all",
+        help="Which YooAssets source layout to scan when --game-root is used.",
+    )
+    parser.add_argument("--out", default="xzy_assets_out", help="Output directory.")
+    parser.add_argument("--packages", default="", help="Comma-separated package names, for example Icon,Main,Spine.")
+    parser.add_argument("--categories", default="", help="Comma-separated output categories to export, for example ui,bgm,models,effects. Empty means all categories.")
+    parser.add_argument("--types", default="", help="Comma-separated Unity object type names to export, for example Texture2D,Sprite,AudioClip. Empty means all types.")
+    parser.add_argument("--limit", type=int, default=30, help="Maximum bundles to process. Use 0 for all.")
+    parser.add_argument("--execute", action="store_true", help="Write exported files and index files. Without this, run as dry-run.")
+    parser.add_argument("--no-export", action="store_true", help="Classify/decrypt bundles only; skip UnityPy object export.")
+    parser.add_argument("--copy-rawfiles", action="store_true", help="Copy local .rawfile payloads under assets/raw and add them to assets.csv.")
+    parser.add_argument("--keep-bundles", action="store_true", help="Write decrypted UnityFS bundles under decrypted_bundles/.")
+    parser.add_argument("--deps-dir", default="", help="Optional directory containing installed Python dependencies, such as UnityPy.")
+    parser.add_argument("--progress-every", type=int, default=25, help="Print progress every N processed bundles. Use 0 to disable.")
+    parser.add_argument("--progress-style", choices=("bar", "lines", "none"), default="bar", help="Progress display style. Use lines for log files.")
+    parser.add_argument("--no-manifest-check", action="store_true", help="Skip manifest/catalog static reference scan.")
+    parser.add_argument("--list-packages", action="store_true", help="Print package report and exit.")
+    parser.add_argument("--fail-on-error", action="store_true", help="Return exit code 2 when bundle-level errors are found.")
+    parser.add_argument("--ui-packages", default="Icon,Background,Main,Spine", help="Packages whose Texture2D/Sprite outputs should be grouped under assets/ui.")
+    parser.add_argument("--model-packages", default="CharacterMesh,Art3D", help="Packages grouped under assets/models.")
+    parser.add_argument("--effects-packages", default="BattlePacket,Effect,Effects,Vfx,VFX,Fx", help="Packages grouped under assets/effects.")
+    parser.add_argument(
+        "--animation-packages",
+        default="Spine,AnimationPacket,CharacterTimeline,CharacterController,CharacterPerformance",
+        help="Packages grouped under assets/animation for non-image objects.",
+    )
+    return parser
+
+
+def validate_roots(yoo_roots: list[YooRoot]) -> None:
+    if not yoo_roots:
+        raise SystemExit(
+            "YooAssets root not found. Expected XzyLauncher_Data/yoo and/or "
+            "XzyLauncher_Data/StreamingAssets/yoo under --game-root."
+        )
+    missing_roots = [root.path for root in yoo_roots if not root.path.exists()]
+    if missing_roots:
+        raise SystemExit(f"YooAssets root not found: {missing_roots[0]}")
+
+
+def build_export_options(args: argparse.Namespace, out_root: Path, categories: set[str] | None, types: set[str] | None, unitypy: Any | None) -> ExportOptions:
+    return ExportOptions(
+        out_root=out_root,
+        execute=args.execute,
+        keep_bundles=args.keep_bundles,
+        no_export=args.no_export,
+        categories=categories,
+        types=types,
+        ui_packages=parse_csv_lower(args.ui_packages),
+        model_packages=parse_csv_lower(args.model_packages),
+        effects_packages=parse_csv_lower(args.effects_packages),
+        animation_packages=parse_csv_lower(args.animation_packages),
+        unitypy=unitypy,
+    )
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    start_time = time.time()
+
+    yoo_roots = resolve_yoo_roots(args.game_root, args.yoo_root, args.source_layout)
+    out_root = Path(args.out).expanduser().resolve()
+    packages = parse_csv(args.packages)
+    categories = parse_csv_lower(args.categories) if args.categories else None
+    types = parse_csv_lower(args.types) if args.types else None
+
+    if categories:
+        unknown_categories = categories - OUTPUT_CATEGORIES
+        if unknown_categories:
+            parser.error(f"unknown --categories value(s): {', '.join(sorted(unknown_categories))}")
+
+    validate_roots(yoo_roots)
+
+    package_roots = list(iter_package_roots(yoo_roots, packages))
+    package_rows = [package_report_row(yoo_root, package_root) for yoo_root, package_root in package_roots]
+    if args.list_packages:
+        print(json.dumps(package_rows, ensure_ascii=False, indent=2))
+        return 0
+
+    bundle_paths = list(iter_bundle_files(package_roots))
+    total_bundles = len(bundle_paths)
+    selected_bundles = bundle_paths[: args.limit] if args.limit else bundle_paths
+    raw_file_paths = list(iter_raw_files(package_roots)) if args.copy_rawfiles else []
+
+    manifest_index = None
+    if not args.no_manifest_check:
+        manifest_index = build_manifest_index(package_roots)
+
+    unitypy = None
+    if not args.no_export:
+        unitypy = import_unitypy(args.deps_dir or None)
+
+    options = build_export_options(args, out_root, categories, types, unitypy)
+    ctx = ExportContext(options=options, used_outputs=set(), manifest_index=manifest_index)
+
+    asset_rows: list[dict[str, Any]] = []
+    bundle_rows: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    processed = 0
+    progress = ProgressReporter(len(selected_bundles), args.progress_style, args.progress_every)
+    if selected_bundles and args.progress_style != "none":
+        print(
+            f"Processing {len(selected_bundles)} bundle(s) "
+            f"from {total_bundles} discovered bundle(s). "
+            f"manifest_refs={len(manifest_index.rows) if manifest_index else 'skipped'}",
+            flush=True,
+        )
+    for candidate in selected_bundles:
+        processed += 1
+        package_root = candidate.package_root
+        data_path = candidate.data_path
+
+        try:
+            load_bundle_bytes = not args.no_export or args.keep_bundles
+            bundle = classify_bundle(
+                data_path,
+                package_root,
+                candidate.root.layout,
+                candidate.hash_name,
+                load_bytes=load_bundle_bytes,
+            )
+            manifest_reference, manifest_match = manifest_match_for_bundle(bundle.hash_name, manifest_index)
+            bundle_rows.append(
+                {
+                    "layout": bundle.layout,
+                    "package": bundle.package,
+                    "bundle_hash": bundle.hash_name,
+                    "mode": bundle.mode,
+                    "source": str(bundle.source_path),
+                    "length": bundle.source_path.stat().st_size,
+                    "raw_head": bundle.raw_head[:16].hex(" "),
+                    "decoded_head": bundle.decoded_head[:16].hex(" ") if bundle.decoded_head else "",
+                    "manifest_reference": manifest_reference,
+                    "manifest_match": manifest_match,
+                }
+            )
+
+            if bundle.mode.endswith("_unityfs") and bundle.unity_bytes:
+                if args.keep_bundles:
+                    target = out_root / "decrypted_bundles" / bundle.layout / bundle.package / f"{bundle.hash_name}.bundle"
+                    write_bytes(target, bundle.unity_bytes, args.execute)
+
+                if not args.no_export:
+                    env = load_unity_env(unitypy, bundle.unity_bytes)
+                    for obj in env.objects:
+                        asset_rows.extend(export_object(obj, bundle, ctx))
+            elif bundle.unity_bytes:
+                if category_is_enabled("raw", options):
+                    target = out_root / "raw" / bundle.layout / bundle.package / f"{bundle.hash_name}.bin"
+                    write_bytes(target, bundle.unity_bytes, args.execute)
+
+        except Exception as exc:
+            errors.append(
+                {
+                    "source": str(data_path),
+                    "error": str(exc),
+                    "trace": traceback.format_exc(limit=6),
+                }
+            )
+
+        progress.update(processed, len(asset_rows), len(errors), f"{candidate.root.layout}/{package_root.name}/{candidate.hash_name}")
+    progress.finish()
+
+    copied_rawfiles = 0
+    listed_rawfiles = 0
+    skipped_rawfiles = 0
+    if args.copy_rawfiles:
+        for raw_file in raw_file_paths:
+            if category_is_enabled("raw", options):
+                target = rawfile_output_path(ctx, raw_file)
+                copy_file(raw_file.data_path, target, args.execute)
+                asset_rows.append(rawfile_row(raw_file, target, "copied_rawfile" if args.execute else "listed_rawfile", out_root))
+                if args.execute:
+                    copied_rawfiles += 1
+                else:
+                    listed_rawfiles += 1
+            else:
+                asset_rows.append(rawfile_row(raw_file, None, "skipped_category", out_root))
+                skipped_rawfiles += 1
+
+    bundle_modes = Counter(row["mode"] for row in bundle_rows)
+    layout_counts = Counter(row["layout"] for row in bundle_rows)
+    asset_statuses = Counter(row["status"] for row in asset_rows)
+    package_counts = Counter(row["package"] for row in bundle_rows)
+    duration_sec = round(time.time() - start_time, 3)
+    summary = {
+        "execute": args.execute,
+        "duration_sec": duration_sec,
+        "yoo_root": str(yoo_roots[0].path) if len(yoo_roots) == 1 else "multiple",
+        "yoo_roots": [{"layout": root.layout, "path": str(root.path)} for root in yoo_roots],
+        "source_layout": args.source_layout,
+        "out": str(out_root),
+        "packages": sorted(packages) if packages else "all",
+        "categories": sorted(categories) if categories else "all",
+        "types": sorted(types) if types else "all",
+        "processed_bundles": processed,
+        "discovered_bundles": total_bundles,
+        "asset_rows": len(asset_rows),
+        "rawfiles_discovered": len(raw_file_paths),
+        "rawfiles_listed": listed_rawfiles,
+        "rawfiles_copied": copied_rawfiles,
+        "rawfiles_skipped": skipped_rawfiles,
+        "errors": len(errors),
+        "manifest_check": "skipped" if manifest_index is None else "static_scan",
+        "manifest_refs": 0 if manifest_index is None else len(manifest_index.rows),
+        "bundle_modes": dict(bundle_modes),
+        "layout_counts": dict(layout_counts),
+        "asset_statuses": dict(asset_statuses),
+        "package_counts": dict(package_counts),
+        "note": "dry-run only; add --execute to write files" if not args.execute else "files written",
+    }
+
+    if args.execute:
+        out_root.mkdir(parents=True, exist_ok=True)
+        write_csv(out_root / "package_report.csv", PACKAGE_FIELDS, package_rows)
+        write_csv(out_root / "bundles.csv", BUNDLE_FIELDS, bundle_rows)
+        write_csv(out_root / "assets.csv", ASSET_FIELDS, asset_rows)
+        if manifest_index is not None:
+            write_csv(out_root / "manifest_refs.csv", MANIFEST_REF_FIELDS, manifest_index.rows)
+        (out_root / "errors.json").write_text(json.dumps(errors, ensure_ascii=False, indent=2), encoding="utf-8")
+        (out_root / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    if errors and args.fail_on_error:
+        return 2
+    return 0

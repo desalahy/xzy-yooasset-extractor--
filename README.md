@@ -19,7 +19,9 @@ It is not a universal Unity extractor and it does not download missing bundles f
 
 ## Features
 
-- Scans `XzyLauncher_Data/yoo` package directories.
+- Scans both local YooAssets layouts when `--game-root` is used:
+  - hot-update layout: `XzyLauncher_Data/yoo/<Package>/BundleFiles/**/__data`
+  - built-in StreamingAssets layout: `XzyLauncher_Data/StreamingAssets/yoo/<Package>/*.bundle`
 - Detects bundle modes:
   - `plain_unityfs`
   - `tail16_xor_unityfs`
@@ -30,10 +32,11 @@ It is not a universal Unity extractor and it does not download missing bundles f
   - `Texture2D` and `Sprite` to PNG
   - `AudioClip` samples
   - selected raw/text objects
+- Optionally copies non-Unity `.rawfile` payloads with `--copy-rawfiles`.
 - Filters export by output category (`ui`, `bgm`, `audio`, `models`, `effects`, and more) or by Unity object type.
 - Shows a real progress display with total bundle count, percentage, elapsed time, ETA, asset row count, and error count.
 - Provides a Windows wizard batch file for choosing the game folder, output folder, and export mode without editing command text.
-- Scans local `ManifestFiles` and records static reference evidence, so exported rows can be compared with local manifest/catalog strings.
+- Scans local manifest/catalog-like files and records static reference evidence, so exported rows can be compared with local manifest/catalog strings.
 - Writes reproducible indexes:
   - `package_report.csv`
   - `bundles.csv`
@@ -68,6 +71,22 @@ or set:
 set UNITYPY_DEPS_DIR=C:\path\to\site-packages
 ```
 
+## Project Layout
+
+| Path | Purpose |
+| --- | --- |
+| `xzy_yooasset_extractor.py` | Backward-compatible CLI entry point. Keep running commands through this file. |
+| `xzy_yooasset_core/cli.py` | Argument parsing and the main orchestration loop. |
+| `xzy_yooasset_core/discovery.py` | Finds YooAssets roots, package folders, `.bundle`, `__data`, and `.rawfile` candidates. |
+| `xzy_yooasset_core/bundle.py` | Bundle probing, tail-16 XOR decoding, and bundle mode classification. |
+| `xzy_yooasset_core/exporter.py` | UnityPy object export, output path allocation, and rawfile copying. |
+| `xzy_yooasset_core/manifest.py` | Manifest/catalog static string scan and reference matching. |
+| `xzy_yooasset_core/models.py` | Shared dataclasses used by scanner, exporter, and CLI. |
+| `xzy_yooasset_core/constants.py` | CSV schemas, category names, and static suffix lists. |
+| `xzy_yooasset_core/progress.py` | Console progress bar and line progress reporter. |
+| `xzy_yooasset_core/utils.py` | Small path, CSV, and string helpers. |
+| `tests/` | Unit tests with synthetic bundles; no real game files are required. |
+
 ## Quick Start
 
 On Windows, the simplest entry point is:
@@ -76,7 +95,7 @@ On Windows, the simplest entry point is:
 run_wizard_windows.bat
 ```
 
-It opens folder pickers for the game root and output folder, then asks which export mode to run.
+It opens folder pickers for the game root and output folder, then asks which export mode to run. With `--game-root`, the extractor scans both `XzyLauncher_Data/yoo` and `XzyLauncher_Data/StreamingAssets/yoo` when those directories exist.
 
 List available YooAssets packages:
 
@@ -159,21 +178,23 @@ Export effect-related objects:
 python xzy_yooasset_extractor.py ^
   --game-root "E:\XZY\shengtianpc\10046\game" ^
   --packages BattlePacket,AnimationPacket,CharacterPerformance ^
-  --categories effects,animation,materials,textures,prefabs ^
+  --categories effects,animation,materials,textures,prefabs,raw ^
   --out "E:\XZY\Effects" ^
   --limit 0 ^
+  --copy-rawfiles ^
   --execute ^
   --progress-every 1 ^
   --progress-style bar
 ```
 
-Export every local package with `BundleFiles`:
+Export every local package from both local YooAssets sources:
 
 ```bash
 python xzy_yooasset_extractor.py ^
   --game-root "E:\XZY\shengtianpc\10046\game" ^
   --out "E:\XZY\AllAssets" ^
   --limit 0 ^
+  --copy-rawfiles ^
   --execute ^
   --progress-every 1 ^
   --progress-style bar
@@ -227,7 +248,7 @@ The `examples/` directory also contains double-clickable batch files. They now `
 | `examples/extract_ui_windows.bat` | Export UI images. |
 | `examples/extract_bgm_windows.bat` | Export BGM AudioClip samples. |
 | `examples/extract_models_windows.bat` | Export model-related objects, materials, and textures. |
-| `examples/extract_effects_windows.bat` | Export effect-related objects, animation data, materials, textures, and prefabs. |
+| `examples/extract_effects_windows.bat` | Export effect-related objects, animation data, materials, textures, prefabs, and rawfile payloads. |
 
 ## Output Layout
 
@@ -241,9 +262,8 @@ out/
   summary.json
   assets/
     ui/
-      Icon/<bundle_hash>/*.png
-      Main/<bundle_hash>/*.png
-      Spine/<bundle_hash>/*.png
+      hot_update/Icon/<bundle_hash>/*.png
+      streaming_assets/Icon/<bundle_hash>/*.png
     audio/
     bgm/
     models/
@@ -252,13 +272,18 @@ out/
     prefabs/
     text/
     textures/
+    raw/
 ```
 
-`assets.csv` is the main lookup table. Each row includes package name, bundle hash, bundle mode, Unity object type, `path_id`, original asset name, output category, output path, export status, and local manifest reference evidence.
+`assets.csv` is the main lookup table. Each row includes source layout, package name, bundle hash, bundle mode, Unity object type, `path_id`, original asset name, output category, output path, export status, and local manifest reference evidence.
+
+The extra `hot_update` / `streaming_assets` directory level prevents collisions when the same package or hash-like name appears in both YooAssets roots.
 
 ## Manifest Reference Check
 
-The extractor performs a static scan of local `ManifestFiles` by default. This helps answer: "is this bundle or object mentioned by the local manifest/catalog data?"
+The extractor performs a static scan of local manifest/catalog-like files by default. This helps answer: "is this bundle or object mentioned by the local manifest/catalog data?"
+
+It reads `ManifestFiles/**/*` from the hot-update layout and `.bytes`, `.json`, `.hash`, `.version` files from the StreamingAssets layout.
 
 New columns:
 
@@ -271,7 +296,7 @@ Output file:
 
 | File | Purpose |
 | --- | --- |
-| `manifest_refs.csv` | Extracted static strings from local `ManifestFiles`, including hash-like tokens and asset paths. |
+| `manifest_refs.csv` | Extracted static strings from local manifest/catalog-like files, including hash-like tokens and asset paths. |
 
 Important boundary: this is static evidence, not a runtime truth oracle. `not_found` means the local manifest scan did not find a matching hash/name/path. It does not prove the asset is never used at runtime, because a game can load by code, remote catalog, generated address, binary-only metadata, or a manifest format this simple scanner cannot fully decode.
 
@@ -279,8 +304,9 @@ Important boundary: this is static evidence, not a runtime truth oracle. `not_fo
 
 | Option | Description |
 | --- | --- |
-| `--game-root` | Game root containing `XzyLauncher_Data/yoo`. |
-| `--yoo-root` | Direct YooAssets root path. Overrides `--game-root`. |
+| `--game-root` | Game root containing `XzyLauncher_Data`. Scans both `XzyLauncher_Data/yoo` and `XzyLauncher_Data/StreamingAssets/yoo` when present. |
+| `--yoo-root` | Direct path to one YooAssets root. Overrides `--game-root`, so it scans only that one root. |
+| `--source-layout` | Source layout to scan with `--game-root`: `all`, `hot`, or `streaming`. Default is `all`. |
 | `--out` | Output directory. Defaults to `xzy_assets_out`. |
 | `--packages` | Comma-separated package names, for example `Icon,Main,Spine`. Empty means all packages. |
 | `--categories` | Comma-separated output categories to export, for example `ui,bgm,models,effects`. Empty means all categories. Valid categories: `ui`, `bgm`, `audio`, `models`, `effects`, `animation`, `prefabs`, `text`, `textures`, `materials`, `raw`, `other`. |
@@ -288,11 +314,12 @@ Important boundary: this is static evidence, not a runtime truth oracle. `not_fo
 | `--limit` | Maximum bundle count. Defaults to `30`; `0` means all bundles. |
 | `--execute` | Actually write files. Without this flag the command is a dry-run. |
 | `--no-export` | Classify/decrypt bundles but skip UnityPy object export. |
+| `--copy-rawfiles` | Copy local `.rawfile` payloads under `assets/raw/<layout>/<package>/...` and add rows to `assets.csv`. These files are not parsed as Unity bundles. |
 | `--keep-bundles` | Save decrypted UnityFS bundles under `decrypted_bundles/`. |
 | `--deps-dir` | Optional dependency directory containing UnityPy. |
 | `--progress-every` | Refresh progress after every N processed bundles. Defaults to `25`; use `1` for the most visible progress and `0` to disable progress output. |
 | `--progress-style` | Progress style: `bar`, `lines`, or `none`. Default is `bar`. |
-| `--no-manifest-check` | Skip static `ManifestFiles` reference scanning. |
+| `--no-manifest-check` | Skip static manifest/catalog reference scanning. |
 | `--list-packages` | Print the package report and exit without processing bundles. |
 | `--fail-on-error` | Return exit code `2` when bundle-level errors are found. Useful for batch scripts or CI. |
 | `--ui-packages` | Packages whose `Texture2D` and `Sprite` objects go under `assets/ui`. Default: `Icon,Background,Main,Spine`. |
@@ -304,7 +331,9 @@ Important boundary: this is static evidence, not a runtime truth oracle. `not_fo
 
 ## Background Package Note
 
-Some installations contain a `Background` package with only `ManifestFiles/*.bytes` and `.hash` files, but no `BundleFiles/**/__data`. In that case the manifest may list paths such as `Assets/GameData/UiBackgrounds/*.png`, but the actual bundles are not present locally. The extractor cannot recreate images from a manifest alone.
+Some hot-update packages contain only `ManifestFiles/*.bytes` and `.hash` files, but no `BundleFiles/**/__data`. In that case the manifest may list paths such as `Assets/GameData/UiBackgrounds/*.png`, but the actual hot-update bundles are not present in that root. The extractor cannot recreate images from a manifest alone.
+
+For this project, many built-in bundles live under `XzyLauncher_Data/StreamingAssets/yoo/<Package>/*.bundle`; use `--game-root` instead of pointing `--yoo-root` only at `XzyLauncher_Data/yoo` if you want a full local scan.
 
 Use `--list-packages` to confirm whether a package has real bundle files.
 
@@ -343,6 +372,8 @@ The unit tests use synthetic temporary bundles and do not require real game file
 ```bash
 python -m unittest discover -s tests
 ```
+
+By default, test temporary data is created under `E:\XZYTool\_extractor_test_tmp`. Override it with `XZY_EXTRACTOR_TEST_TMP` when needed.
 
 Syntax check:
 

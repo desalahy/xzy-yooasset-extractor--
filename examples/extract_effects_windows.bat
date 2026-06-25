@@ -14,9 +14,10 @@ set OUT_DIR=E:\XZY\Effects
 %PYTHON_CMD% xzy_yooasset_extractor.py ^
   --game-root "%GAME_ROOT%" ^
   --packages BattlePacket,AnimationPacket,CharacterPerformance ^
-  --categories effects,animation,materials,textures,prefabs ^
+  --categories effects,animation,materials,textures,prefabs,raw ^
   --out "%OUT_DIR%" ^
   --limit 0 ^
+  --copy-rawfiles ^
   --execute ^
   --progress-every 1 ^
   --progress-style bar

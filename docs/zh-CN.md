@@ -1,6 +1,11 @@
 # XZY YooAsset Extractor 中文说明
 
-这是一个本地研究和学习用的 YooAssets/Unity 资源解包工具。它会扫描 `XzyLauncher_Data/yoo` 目录，识别普通 UnityFS bundle，也能处理一种“文件末尾 16 字节作为 XOR key”的资源加密格式。
+这是一个本地研究和学习用的 YooAssets/Unity 资源解包工具。使用 `--game-root` 时，它会同时扫描两个本地 YooAssets 来源：
+
+- 热更目录：`XzyLauncher_Data/yoo/<Package>/BundleFiles/**/__data`
+- 内置资源目录：`XzyLauncher_Data/StreamingAssets/yoo/<Package>/*.bundle`
+
+它能识别普通 UnityFS bundle，也能处理一种“文件末尾 16 字节作为 XOR key”的资源加密格式。
 
 ## 安装
 
@@ -12,6 +17,22 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
+## 项目代码结构
+
+| 路径 | 作用 |
+| --- | --- |
+| `xzy_yooasset_extractor.py` | 兼容入口文件。继续用 `python xzy_yooasset_extractor.py ...` 运行即可。 |
+| `xzy_yooasset_core/cli.py` | 命令行参数解析和主流程编排。 |
+| `xzy_yooasset_core/discovery.py` | 查找 YooAssets 根目录、package、`.bundle`、`__data`、`.rawfile`。 |
+| `xzy_yooasset_core/bundle.py` | bundle 头部探测、尾部 16 字节 XOR 解密、bundle 模式分类。 |
+| `xzy_yooasset_core/exporter.py` | UnityPy 对象导出、输出路径分配、rawfile 原样复制。 |
+| `xzy_yooasset_core/manifest.py` | manifest/catalog 静态字符串扫描和引用匹配。 |
+| `xzy_yooasset_core/models.py` | 扫描、导出和 CLI 共用的数据结构。 |
+| `xzy_yooasset_core/constants.py` | CSV 字段、分类名、静态后缀列表。 |
+| `xzy_yooasset_core/progress.py` | 进度条和逐行进度输出。 |
+| `xzy_yooasset_core/utils.py` | 路径、CSV、字符串等小工具函数。 |
+| `tests/` | 单元测试，只用合成 bundle，不需要真实游戏文件。 |
+
 ## Windows 最简单入口
 
 双击项目根目录下的：
@@ -20,11 +41,11 @@ python -m pip install -r requirements.txt
 run_wizard_windows.bat
 ```
 
-它会弹窗让你选择游戏根目录和输出目录，然后让你选择导出模式：UI、BGM、音效/语音、模型、特效、全量或只做 bundle 索引。
+它会弹窗让你选择游戏根目录和输出目录，然后让你选择导出模式：UI、BGM、音效/语音、模型、特效、全量或只做 bundle 索引。只要选择的是游戏根目录，脚本默认会同时扫描 `XzyLauncher_Data/yoo` 和 `XzyLauncher_Data/StreamingAssets/yoo`。
 
 ## 先看有哪些包
 
-先列出本地 YooAssets 包，确认哪些包有 `BundleFiles`。
+先列出本地 YooAssets 包，确认哪些包有热更 `BundleFiles`、哪些包有 StreamingAssets `.bundle`。
 
 ```bash
 python xzy_yooasset_extractor.py ^
@@ -32,13 +53,15 @@ python xzy_yooasset_extractor.py ^
   --list-packages
 ```
 
-如果你已经定位到了 `yoo` 目录，也可以直接用 `--yoo-root`：
+如果你已经定位到了某一个 `yoo` 目录，也可以直接用 `--yoo-root`：
 
 ```bash
 python xzy_yooasset_extractor.py ^
   --yoo-root "E:\XZY\shengtianpc\10046\game\XzyLauncher_Data\yoo" ^
   --list-packages
 ```
+
+注意：`--yoo-root` 只扫描你指定的这一个根目录。想完整扫描本地资源，推荐传 `--game-root "...\game"`，不要只传 `XzyLauncher_Data\yoo`。
 
 ## 先小范围测试
 
@@ -55,19 +78,24 @@ python xzy_yooasset_extractor.py ^
 
 ## 全量导出所有包
 
-不传 `--packages` 就会扫描所有包；`--limit 0` 表示不限制 bundle 数量。
+不传 `--packages` 就会扫描所有包；`--limit 0` 表示不限制 bundle 数量。默认 `--source-layout all`，也就是热更目录和 StreamingAssets 目录都扫。
 
 ```bash
 python xzy_yooasset_extractor.py ^
   --game-root "E:\XZY\shengtianpc\10046\game" ^
   --out "E:\XZY\AllAssets" ^
   --limit 0 ^
+  --copy-rawfiles ^
   --execute ^
   --progress-every 1 ^
   --progress-style bar
 ```
 
 这会尽量导出 UnityPy 能读取的资源，包括 UI 图片、BGM、音效、语音、贴图、模型相关对象、动画相关对象、特效相关对象、文本和材质等。
+
+`--copy-rawfiles` 会额外复制本地 `.rawfile` payload 到 `assets/raw/<layout>/<package>/...`，并写入 `assets.csv`。这类文件不当作 UnityFS bundle 解析，只做原样归档。
+
+如果你之前只得到了约 2GB 输出，常见原因是只扫描了 `XzyLauncher_Data/yoo` 热更目录，漏掉了更大的 `XzyLauncher_Data/StreamingAssets/yoo`。用上面的 `--game-root` 全量命令会把两个来源都纳入扫描。
 
 `--progress-style bar` 会显示可视化进度条，包含总数、百分比、已耗时、预计剩余时间、资产行数和错误数。`--progress-every 1` 表示每处理 1 个 bundle 刷新一次。它不会限制导出数量，也不会影响导出内容。设置 `--progress-style lines` 可以改成逐行日志，设置 `--progress-every 0` 可以关闭进度输出。
 
@@ -89,6 +117,21 @@ python xzy_yooasset_extractor.py ^
 ```
 
 这会生成 `package_report.csv`、`bundles.csv`、`errors.json`、`summary.json`，适合先做资源包盘点和解密模式确认。
+
+你也可以只盘点某一个来源：
+
+```bash
+python xzy_yooasset_extractor.py ^
+  --game-root "E:\XZY\shengtianpc\10046\game" ^
+  --source-layout streaming ^
+  --out "E:\XZY\BundleIndexStreaming" ^
+  --limit 0 ^
+  --no-export ^
+  --execute ^
+  --progress-style lines
+```
+
+`--source-layout hot` 只扫 `XzyLauncher_Data/yoo`，`--source-layout streaming` 只扫 `XzyLauncher_Data/StreamingAssets/yoo`，默认 `all` 两个都扫。
 
 ## 只导出 UI 图片
 
@@ -174,9 +217,10 @@ python xzy_yooasset_extractor.py ^
 python xzy_yooasset_extractor.py ^
   --game-root "E:\XZY\shengtianpc\10046\game" ^
   --packages BattlePacket,AnimationPacket,CharacterPerformance ^
-  --categories effects,animation,materials,textures,prefabs ^
+  --categories effects,animation,materials,textures,prefabs,raw ^
   --out "E:\XZY\Effects" ^
   --limit 0 ^
+  --copy-rawfiles ^
   --execute ^
   --progress-every 1 ^
   --progress-style bar
@@ -187,6 +231,7 @@ python xzy_yooasset_extractor.py ^
 - 特效资源常常不是单独一个文件，而是 prefab、动画、材质、贴图、粒子系统等组合。
 - `effects` 会收集明显的粒子/特效对象，或者名称里带 `effect`、`vfx`、`fx`、`particle` 的对象。
 - `animation`、`materials`、`textures`、`prefabs` 一起导出，后续排查特效时更有用。
+- `AnimationPacket` 这类包里可能有 `.rawfile`，加 `raw` 分类和 `--copy-rawfiles` 后会原样复制出来。
 - 如果你发现某个特效包没有被归到 `effects`，可以用 `--effects-packages 包名1,包名2` 补充规则。
 
 ## 只导出动画相关资源
@@ -252,6 +297,8 @@ out/
   summary.json
   assets/
     ui/
+      hot_update/
+      streaming_assets/
     audio/
     bgm/
     models/
@@ -267,25 +314,40 @@ out/
 
 重点看这几个文件：
 
-- `package_report.csv`: 每个包是否存在 `BundleFiles`、bundle 数量、manifest 数量。
+- `package_report.csv`: 每个包的来源、bundle 数量、热更 `__data` 数量、StreamingAssets `.bundle` 数量、`.rawfile` 数量、manifest/catalog 数量。
 - `bundles.csv`: 每个 bundle 的识别模式、原始头部、解密后头部。
 - `assets.csv`: Unity 对象清单，包含类型、`path_id`、资源名、分类、导出路径、状态。
-- `manifest_refs.csv`: 从本地 `ManifestFiles` 里静态提取出来的 hash、资源路径和可读字符串。
+- `manifest_refs.csv`: 从本地 manifest/catalog 类文件里静态提取出来的 hash、资源路径和可读字符串。
 - `errors.json`: bundle 级错误。
 - `summary.json`: 本次运行摘要。
 
-如果全量导出后想知道某个文件在哪里，先查 `assets.csv` 的 `output` 列，再看同一行的 `package`、`bundle_hash`、`type`、`path_id`。
+实际导出的文件会多一层来源目录，例如：
+
+```text
+assets/ui/hot_update/Icon/<bundle_hash>/*.png
+assets/ui/streaming_assets/Icon/<bundle_hash>/*.png
+assets/bgm/streaming_assets/Bgm/<bundle_hash>/*.wav
+decrypted_bundles/streaming_assets/Icon/<bundle_hash>.bundle
+raw/hot_update/Icon/<bundle_hash>.bin
+assets/raw/streaming_assets/AnimationPacket/*.rawfile
+```
+
+这层 `hot_update` / `streaming_assets` 用来避免两个来源里出现同名 package 或同名 hash 时互相覆盖。
+
+如果全量导出后想知道某个文件在哪里，先查 `assets.csv` 的 `output` 列，再看同一行的 `layout`、`package`、`bundle_hash`、`type`、`path_id`。
 
 如果使用了 `--categories` 或 `--types`，被过滤掉的对象仍会出现在 `assets.csv`，状态会是 `skipped_category` 或 `skipped_type`。
 
 ## 如何判断是否被当前项目实际引用
 
-脚本现在会默认扫描本地 `ManifestFiles`，并在 `bundles.csv` 和 `assets.csv` 里写入：
+脚本现在会默认扫描本地 manifest/catalog 类文件，并在 `bundles.csv` 和 `assets.csv` 里写入：
 
 | 字段 | 含义 |
 | --- | --- |
 | `manifest_reference` | `referenced`、`referenced_bundle`、`not_found` 或 `not_checked`。 |
 | `manifest_match` | 匹配到的 hash 或资源路径。 |
+
+热更目录会扫描 `ManifestFiles/**/*`；StreamingAssets 目录会扫描 `.bytes`、`.json`、`.hash`、`.version` 文件。
 
 这些字段只能说明“本地 manifest 静态扫描是否找到线索”，不能 100% 证明运行时是否使用。原因是游戏可能通过代码、远程 catalog、生成地址、二进制表或当前扫描器没完全解析的格式加载资源。
 
@@ -309,14 +371,15 @@ out/
 | `examples/extract_ui_windows.bat` | 只导出 UI 图片。 |
 | `examples/extract_bgm_windows.bat` | 只导出 BGM。 |
 | `examples/extract_models_windows.bat` | 只导出模型、材质、贴图相关对象。 |
-| `examples/extract_effects_windows.bat` | 只导出特效、动画、材质、贴图、prefab 相关对象。 |
+| `examples/extract_effects_windows.bat` | 只导出特效、动画、材质、贴图、prefab 和 rawfile 相关对象。 |
 
 ## 参数说明
 
 | 参数 | 作用 |
 | --- | --- |
-| `--game-root "E:\...\game"` | 游戏根目录。脚本会自动找 `XzyLauncher_Data/yoo`。 |
-| `--yoo-root "E:\...\XzyLauncher_Data\yoo"` | 直接指定 YooAssets 根目录。传了它就会覆盖 `--game-root`。 |
+| `--game-root "E:\...\game"` | 游戏根目录。脚本会自动找 `XzyLauncher_Data/yoo` 和 `XzyLauncher_Data/StreamingAssets/yoo`。 |
+| `--yoo-root "E:\...\XzyLauncher_Data\yoo"` | 直接指定某一个 YooAssets 根目录。传了它就会覆盖 `--game-root`，因此只扫这一个根目录。 |
+| `--source-layout all` | 使用 `--game-root` 时选择扫描来源。`all` 两个都扫，`hot` 只扫热更目录，`streaming` 只扫 StreamingAssets。 |
 | `--out "E:\XZY\UI"` | 输出目录。不传时默认是当前目录下的 `xzy_assets_out`。 |
 | `--packages Icon,Main,Spine` | 只扫描指定包。不传就是扫描所有包。 |
 | `--categories ui,bgm,models,effects` | 只导出指定分类。不传就是所有分类都导出。可用分类包括 `ui`、`bgm`、`audio`、`models`、`effects`、`animation`、`prefabs`、`text`、`textures`、`materials`、`raw`、`other`。 |
@@ -325,13 +388,14 @@ out/
 | `--limit 0` | 不限制 bundle 数量，适合全量导出。 |
 | `--execute` | 真的写出文件。不加这个参数就是 dry-run。 |
 | `--no-export` | 只识别和解密 bundle，不让 UnityPy 导出内部对象。 |
+| `--copy-rawfiles` | 复制本地 `.rawfile` payload 到 `assets/raw/<layout>/<package>/...`，并写入 `assets.csv`。它不会把 `.rawfile` 当 UnityFS bundle 解析。 |
 | `--keep-bundles` | 保存解密后的 UnityFS bundle。 |
 | `--deps-dir C:\path\to\site-packages` | 指定 UnityPy 等依赖所在目录。 |
 | `--progress-every 1` | 每处理 1 个 bundle 刷新一次进度，最直观。 |
 | `--progress-every 0` | 关闭进度输出。 |
 | `--progress-style bar` | 显示可视化进度条，默认值。 |
 | `--progress-style lines` | 每次刷新输出一行日志，适合保存日志。 |
-| `--no-manifest-check` | 跳过本地 `ManifestFiles` 静态引用检查。 |
+| `--no-manifest-check` | 跳过本地 manifest/catalog 静态引用检查。 |
 | `--list-packages` | 只列出包信息，然后退出。 |
 | `--fail-on-error` | 如果出现 bundle 级错误，进程返回码为 `2`，适合批处理或 CI 检查。 |
 | `--ui-packages Icon,Background,Main,Spine` | 自定义哪些包的图片默认归到 `assets/ui`。 |

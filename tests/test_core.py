@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import csv
+import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import contextmanager
@@ -307,6 +311,59 @@ class CoreExtractorTests(unittest.TestCase):
 
             self.assertEqual(extractor.manifest_match_for_bundle(bundle_hash, index), ("referenced", bundle_hash))
             self.assertEqual(index.rows[0]["layout"], "streaming_assets")
+
+    def test_cli_workers_no_export_writes_stable_indexes(self) -> None:
+        with temp_workspace() as tmp:
+            project_root = Path(__file__).resolve().parents[1]
+            script = project_root / "xzy_yooasset_extractor.py"
+            yoo_root = Path(tmp) / "yoo"
+            package_root = yoo_root / "Icon"
+            plain_path = package_root / "BundleFiles" / "00" / "hash_plain" / "__data"
+            xor_path = package_root / "BundleFiles" / "01" / "hash_xor" / "__data"
+            plain_path.parent.mkdir(parents=True)
+            xor_path.parent.mkdir(parents=True)
+            plain_path.write_bytes(b"UnityFS\x00plain")
+
+            payload = b"UnityFS\x00decoded"
+            key = b"0123456789abcdef"
+            xor_path.write_bytes(bytes(payload[i] ^ key[i % 16] for i in range(len(payload))) + key)
+
+            out_root = Path(tmp) / "out"
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "--yoo-root",
+                    str(yoo_root),
+                    "--out",
+                    str(out_root),
+                    "--limit",
+                    "0",
+                    "--no-export",
+                    "--execute",
+                    "--workers",
+                    "2",
+                    "--progress-style",
+                    "none",
+                    "--no-manifest-check",
+                ],
+                cwd=project_root,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            summary = json.loads((out_root / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["workers"], 2)
+            self.assertEqual(summary["processed_bundles"], 2)
+            self.assertEqual(summary["errors"], 0)
+
+            with (out_root / "bundles.csv").open(newline="", encoding="utf-8-sig") as file:
+                rows = list(csv.DictReader(file))
+
+            self.assertEqual([row["bundle_hash"] for row in rows], ["hash_plain", "hash_xor"])
+            self.assertEqual([row["mode"] for row in rows], ["plain_unityfs", "tail16_xor_unityfs"])
 
 
 if __name__ == "__main__":

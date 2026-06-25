@@ -41,7 +41,7 @@ python -m pip install -r requirements.txt
 run_wizard_windows.bat
 ```
 
-它会弹窗让你选择游戏根目录和输出目录，然后让你选择导出模式：UI、BGM、音效/语音、模型、特效、全量或只做 bundle 索引。只要选择的是游戏根目录，脚本默认会同时扫描 `XzyLauncher_Data/yoo` 和 `XzyLauncher_Data/StreamingAssets/yoo`。
+它会弹窗让你选择游戏根目录和输出目录，然后让你选择导出模式：UI、BGM、音效/语音、模型、特效、全量或只做 bundle 索引，最后询问 worker 进程数。默认 worker 数是 4。只要选择的是游戏根目录，脚本默认会同时扫描 `XzyLauncher_Data/yoo` 和 `XzyLauncher_Data/StreamingAssets/yoo`。
 
 ## 先看有哪些包
 
@@ -87,6 +87,7 @@ python xzy_yooasset_extractor.py ^
   --limit 0 ^
   --copy-rawfiles ^
   --execute ^
+  --workers 4 ^
   --progress-every 1 ^
   --progress-style bar
 ```
@@ -96,6 +97,8 @@ python xzy_yooasset_extractor.py ^
 `--copy-rawfiles` 会额外复制本地 `.rawfile` payload 到 `assets/raw/<layout>/<package>/...`，并写入 `assets.csv`。这类文件不当作 UnityFS bundle 解析，只做原样归档。
 
 如果你之前只得到了约 2GB 输出，常见原因是只扫描了 `XzyLauncher_Data/yoo` 热更目录，漏掉了更大的 `XzyLauncher_Data/StreamingAssets/yoo`。用上面的 `--game-root` 全量命令会把两个来源都纳入扫描。
+
+`--workers 4` 表示用 4 个工作进程并行处理 bundle 的识别、解密和 UnityPy 导出。建议先从 `4` 开始；如果 CPU 和磁盘还有余量，再试 `6` 或 `8`。不要盲目开太高，图片/音频写盘和 UnityPy 解析会抢磁盘，进程太多可能反而变慢。
 
 `--progress-style bar` 会显示可视化进度条，包含总数、百分比、已耗时、预计剩余时间、资产行数和错误数。`--progress-every 1` 表示每处理 1 个 bundle 刷新一次。它不会限制导出数量，也不会影响导出内容。设置 `--progress-style lines` 可以改成逐行日志，设置 `--progress-every 0` 可以关闭进度输出。
 
@@ -362,7 +365,7 @@ assets/raw/streaming_assets/AnimationPacket/*.rawfile
 
 推荐先用项目根目录的 `run_wizard_windows.bat`，它可以弹窗选择游戏目录和输出目录。
 
-`examples/` 目录里还有几份可以双击运行的 `.bat` 示例。它们会自动回到项目根目录再运行，所以能找到外层的 `xzy_yooasset_extractor.py`。运行前先打开文件，把 `GAME_ROOT` 和 `OUT_DIR` 改成你自己的路径。
+`examples/` 目录里还有几份可以双击运行的 `.bat` 示例。它们会自动回到项目根目录再运行，所以能找到外层的 `xzy_yooasset_extractor.py`。运行前先打开文件，把 `GAME_ROOT`、`OUT_DIR` 和可选的 `WORKERS` 改成你自己的设置。
 
 | 文件 | 用途 |
 | --- | --- |
@@ -391,6 +394,7 @@ assets/raw/streaming_assets/AnimationPacket/*.rawfile
 | `--copy-rawfiles` | 复制本地 `.rawfile` payload 到 `assets/raw/<layout>/<package>/...`，并写入 `assets.csv`。它不会把 `.rawfile` 当 UnityFS bundle 解析。 |
 | `--keep-bundles` | 保存解密后的 UnityFS bundle。 |
 | `--deps-dir C:\path\to\site-packages` | 指定 UnityPy 等依赖所在目录。 |
+| `--workers 4` | 使用 4 个工作进程并行处理 bundle。默认 `1` 是串行模式。全量导出建议先试 `4`。 |
 | `--progress-every 1` | 每处理 1 个 bundle 刷新一次进度，最直观。 |
 | `--progress-every 0` | 关闭进度输出。 |
 | `--progress-style bar` | 显示可视化进度条，默认值。 |

@@ -10,6 +10,7 @@ if %ERRORLEVEL%==0 set "PYTHON_CMD=py -3"
 REM Change these paths before running.
 set GAME_ROOT=E:\XZY\shengtianpc\10046\game
 set OUT_DIR=E:\XZY\Effects
+set WORKERS=4
 
 %PYTHON_CMD% xzy_yooasset_extractor.py ^
   --game-root "%GAME_ROOT%" ^
@@ -19,6 +20,7 @@ set OUT_DIR=E:\XZY\Effects
   --limit 0 ^
   --copy-rawfiles ^
   --execute ^
+  --workers %WORKERS% ^
   --progress-every 1 ^
   --progress-style bar
 

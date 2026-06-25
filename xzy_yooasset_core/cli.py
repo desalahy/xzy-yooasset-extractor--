@@ -5,6 +5,8 @@ import json
 import time
 import traceback
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,9 +24,23 @@ from .exporter import (
     write_bytes,
 )
 from .manifest import build_manifest_index, manifest_match_for_bundle
-from .models import ExportContext, ExportOptions, YooRoot
+from .models import BundleCandidate, BundleInput, ExportContext, ExportOptions, ManifestIndex, YooRoot
 from .progress import ProgressReporter
 from .utils import parse_csv, parse_csv_lower, write_csv
+
+
+@dataclass
+class BundleProcessResult:
+    index: int
+    progress_label: str
+    bundle_row: dict[str, Any] | None
+    asset_rows: list[dict[str, Any]]
+    error: dict[str, Any] | None
+
+
+_WORKER_OPTIONS: ExportOptions | None = None
+_WORKER_MANIFEST_INDEX: ManifestIndex | None = None
+_WORKER_UNITYPY: Any | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -49,6 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--copy-rawfiles", action="store_true", help="Copy local .rawfile payloads under assets/raw and add them to assets.csv.")
     parser.add_argument("--keep-bundles", action="store_true", help="Write decrypted UnityFS bundles under decrypted_bundles/.")
     parser.add_argument("--deps-dir", default="", help="Optional directory containing installed Python dependencies, such as UnityPy.")
+    parser.add_argument("--workers", type=int, default=1, help="Number of worker processes for bundle classification/export. Use 1 for serial mode.")
     parser.add_argument("--progress-every", type=int, default=25, help="Print progress every N processed bundles. Use 0 to disable.")
     parser.add_argument("--progress-style", choices=("bar", "lines", "none"), default="bar", help="Progress display style. Use lines for log files.")
     parser.add_argument("--no-manifest-check", action="store_true", help="Skip manifest/catalog static reference scan.")
@@ -92,10 +109,100 @@ def build_export_options(args: argparse.Namespace, out_root: Path, categories: s
     )
 
 
+def bundle_row_for(bundle: BundleInput, manifest_index: ManifestIndex | None) -> dict[str, Any]:
+    manifest_reference, manifest_match = manifest_match_for_bundle(bundle.hash_name, manifest_index)
+    return {
+        "layout": bundle.layout,
+        "package": bundle.package,
+        "bundle_hash": bundle.hash_name,
+        "mode": bundle.mode,
+        "source": str(bundle.source_path),
+        "length": bundle.source_path.stat().st_size,
+        "raw_head": bundle.raw_head[:16].hex(" "),
+        "decoded_head": bundle.decoded_head[:16].hex(" ") if bundle.decoded_head else "",
+        "manifest_reference": manifest_reference,
+        "manifest_match": manifest_match,
+    }
+
+
+def process_bundle_candidate(
+    index: int,
+    candidate: BundleCandidate,
+    options: ExportOptions,
+    manifest_index: ManifestIndex | None,
+    unitypy: Any | None,
+) -> BundleProcessResult:
+    package_root = candidate.package_root
+    data_path = candidate.data_path
+    progress_label = f"{candidate.root.layout}/{package_root.name}/{candidate.hash_name}"
+    asset_rows: list[dict[str, Any]] = []
+
+    try:
+        load_bundle_bytes = not options.no_export or options.keep_bundles
+        bundle = classify_bundle(
+            data_path,
+            package_root,
+            candidate.root.layout,
+            candidate.hash_name,
+            load_bytes=load_bundle_bytes,
+        )
+        bundle_row = bundle_row_for(bundle, manifest_index)
+
+        local_ctx = ExportContext(options=options, used_outputs=set(), manifest_index=manifest_index)
+        if bundle.mode.endswith("_unityfs") and bundle.unity_bytes:
+            if options.keep_bundles:
+                target = options.out_root / "decrypted_bundles" / bundle.layout / bundle.package / f"{bundle.hash_name}.bundle"
+                write_bytes(target, bundle.unity_bytes, options.execute)
+
+            if not options.no_export:
+                env = load_unity_env(unitypy, bundle.unity_bytes)
+                for obj in env.objects:
+                    asset_rows.extend(export_object(obj, bundle, local_ctx))
+        elif bundle.unity_bytes:
+            if category_is_enabled("raw", options):
+                target = options.out_root / "raw" / bundle.layout / bundle.package / f"{bundle.hash_name}.bin"
+                write_bytes(target, bundle.unity_bytes, options.execute)
+
+        return BundleProcessResult(index, progress_label, bundle_row, asset_rows, None)
+    except Exception as exc:
+        return BundleProcessResult(
+            index,
+            progress_label,
+            None,
+            [],
+            {
+                "source": str(data_path),
+                "error": str(exc),
+                "trace": traceback.format_exc(limit=6),
+            },
+        )
+
+
+def init_bundle_worker(options: ExportOptions, manifest_index: ManifestIndex | None, deps_dir: str | None) -> None:
+    global _WORKER_OPTIONS, _WORKER_MANIFEST_INDEX, _WORKER_UNITYPY
+
+    _WORKER_OPTIONS = options
+    _WORKER_MANIFEST_INDEX = manifest_index
+    _WORKER_UNITYPY = None
+    if not options.no_export:
+        _WORKER_UNITYPY = import_unitypy(deps_dir)
+        _WORKER_OPTIONS.unitypy = _WORKER_UNITYPY
+
+
+def process_bundle_candidate_worker(args: tuple[int, BundleCandidate]) -> BundleProcessResult:
+    if _WORKER_OPTIONS is None:
+        raise RuntimeError("bundle worker was not initialized")
+    index, candidate = args
+    return process_bundle_candidate(index, candidate, _WORKER_OPTIONS, _WORKER_MANIFEST_INDEX, _WORKER_UNITYPY)
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     start_time = time.time()
+
+    if args.workers < 1:
+        parser.error("--workers must be greater than or equal to 1")
 
     yoo_roots = resolve_yoo_roots(args.game_root, args.yoo_root, args.source_layout)
     out_root = Path(args.out).expanduser().resolve()
@@ -126,7 +233,7 @@ def main() -> int:
         manifest_index = build_manifest_index(package_roots)
 
     unitypy = None
-    if not args.no_export:
+    if not args.no_export and args.workers == 1:
         unitypy = import_unitypy(args.deps_dir or None)
 
     options = build_export_options(args, out_root, categories, types, unitypy)
@@ -142,64 +249,51 @@ def main() -> int:
         print(
             f"Processing {len(selected_bundles)} bundle(s) "
             f"from {total_bundles} discovered bundle(s). "
-            f"manifest_refs={len(manifest_index.rows) if manifest_index else 'skipped'}",
+            f"manifest_refs={len(manifest_index.rows) if manifest_index else 'skipped'} "
+            f"workers={args.workers}",
             flush=True,
         )
-    for candidate in selected_bundles:
-        processed += 1
-        package_root = candidate.package_root
-        data_path = candidate.data_path
 
-        try:
-            load_bundle_bytes = not args.no_export or args.keep_bundles
-            bundle = classify_bundle(
-                data_path,
-                package_root,
-                candidate.root.layout,
-                candidate.hash_name,
-                load_bytes=load_bundle_bytes,
-            )
-            manifest_reference, manifest_match = manifest_match_for_bundle(bundle.hash_name, manifest_index)
-            bundle_rows.append(
-                {
-                    "layout": bundle.layout,
-                    "package": bundle.package,
-                    "bundle_hash": bundle.hash_name,
-                    "mode": bundle.mode,
-                    "source": str(bundle.source_path),
-                    "length": bundle.source_path.stat().st_size,
-                    "raw_head": bundle.raw_head[:16].hex(" "),
-                    "decoded_head": bundle.decoded_head[:16].hex(" ") if bundle.decoded_head else "",
-                    "manifest_reference": manifest_reference,
-                    "manifest_match": manifest_match,
-                }
-            )
-
-            if bundle.mode.endswith("_unityfs") and bundle.unity_bytes:
-                if args.keep_bundles:
-                    target = out_root / "decrypted_bundles" / bundle.layout / bundle.package / f"{bundle.hash_name}.bundle"
-                    write_bytes(target, bundle.unity_bytes, args.execute)
-
-                if not args.no_export:
-                    env = load_unity_env(unitypy, bundle.unity_bytes)
-                    for obj in env.objects:
-                        asset_rows.extend(export_object(obj, bundle, ctx))
-            elif bundle.unity_bytes:
-                if category_is_enabled("raw", options):
-                    target = out_root / "raw" / bundle.layout / bundle.package / f"{bundle.hash_name}.bin"
-                    write_bytes(target, bundle.unity_bytes, args.execute)
-
-        except Exception as exc:
-            errors.append(
-                {
-                    "source": str(data_path),
-                    "error": str(exc),
-                    "trace": traceback.format_exc(limit=6),
-                }
-            )
-
-        progress.update(processed, len(asset_rows), len(errors), f"{candidate.root.layout}/{package_root.name}/{candidate.hash_name}")
+    results: dict[int, BundleProcessResult] = {}
+    completed_asset_rows = 0
+    completed_errors = 0
+    if args.workers == 1:
+        for index, candidate in enumerate(selected_bundles, start=1):
+            result = process_bundle_candidate(index, candidate, options, manifest_index, unitypy)
+            results[index] = result
+            processed += 1
+            completed_asset_rows += len(result.asset_rows)
+            if result.error:
+                completed_errors += 1
+            progress.update(processed, completed_asset_rows, completed_errors, result.progress_label)
+    else:
+        worker_options = build_export_options(args, out_root, categories, types, None)
+        with ProcessPoolExecutor(
+            max_workers=args.workers,
+            initializer=init_bundle_worker,
+            initargs=(worker_options, manifest_index, args.deps_dir or None),
+        ) as executor:
+            futures = [
+                executor.submit(process_bundle_candidate_worker, (index, candidate))
+                for index, candidate in enumerate(selected_bundles, start=1)
+            ]
+            for future in as_completed(futures):
+                result = future.result()
+                results[result.index] = result
+                processed += 1
+                completed_asset_rows += len(result.asset_rows)
+                if result.error:
+                    completed_errors += 1
+                progress.update(processed, completed_asset_rows, completed_errors, result.progress_label)
     progress.finish()
+
+    for index in range(1, len(selected_bundles) + 1):
+        result = results[index]
+        if result.bundle_row is not None:
+            bundle_rows.append(result.bundle_row)
+        asset_rows.extend(result.asset_rows)
+        if result.error:
+            errors.append(result.error)
 
     copied_rawfiles = 0
     listed_rawfiles = 0
@@ -235,6 +329,7 @@ def main() -> int:
         "types": sorted(types) if types else "all",
         "processed_bundles": processed,
         "discovered_bundles": total_bundles,
+        "workers": args.workers,
         "asset_rows": len(asset_rows),
         "rawfiles_discovered": len(raw_file_paths),
         "rawfiles_listed": listed_rawfiles,

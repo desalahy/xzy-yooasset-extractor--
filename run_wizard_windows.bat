@@ -43,6 +43,10 @@ echo   7. Bundle index only, no Unity object export
 echo.
 set /p MODE=Mode number:
 
+echo.
+set /p WORKERS=Worker processes [default 4]:
+if not defined WORKERS set "WORKERS=4"
+
 set "EXTRA_ARGS="
 if "%MODE%"=="1" set "EXTRA_ARGS=--packages Icon,Main,Spine --categories ui --types Texture2D,Sprite"
 if "%MODE%"=="2" set "EXTRA_ARGS=--packages Bgm --categories bgm --types AudioClip"
@@ -61,6 +65,7 @@ if not defined EXTRA_ARGS if not "%MODE%"=="6" (
 echo.
 echo Game root: %GAME_ROOT%
 echo Output:    %OUT_DIR%
+echo Workers:   %WORKERS%
 echo Args:      %EXTRA_ARGS%
 echo.
 
@@ -69,6 +74,7 @@ echo.
   --out "%OUT_DIR%" ^
   --limit 0 ^
   --execute ^
+  --workers %WORKERS% ^
   --progress-every 1 ^
   --progress-style bar ^
   %EXTRA_ARGS%

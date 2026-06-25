@@ -34,6 +34,7 @@ It is not a universal Unity extractor and it does not download missing bundles f
   - selected raw/text objects
 - Optionally copies non-Unity `.rawfile` payloads with `--copy-rawfiles`.
 - Filters export by output category (`ui`, `bgm`, `audio`, `models`, `effects`, and more) or by Unity object type.
+- Can process bundles in multiple worker processes with `--workers`.
 - Shows a real progress display with total bundle count, percentage, elapsed time, ETA, asset row count, and error count.
 - Provides a Windows wizard batch file for choosing the game folder, output folder, and export mode without editing command text.
 - Scans local manifest/catalog-like files and records static reference evidence, so exported rows can be compared with local manifest/catalog strings.
@@ -95,7 +96,7 @@ On Windows, the simplest entry point is:
 run_wizard_windows.bat
 ```
 
-It opens folder pickers for the game root and output folder, then asks which export mode to run. With `--game-root`, the extractor scans both `XzyLauncher_Data/yoo` and `XzyLauncher_Data/StreamingAssets/yoo` when those directories exist.
+It opens folder pickers for the game root and output folder, then asks which export mode to run and how many worker processes to use. With `--game-root`, the extractor scans both `XzyLauncher_Data/yoo` and `XzyLauncher_Data/StreamingAssets/yoo` when those directories exist.
 
 List available YooAssets packages:
 
@@ -196,9 +197,12 @@ python xzy_yooasset_extractor.py ^
   --limit 0 ^
   --copy-rawfiles ^
   --execute ^
+  --workers 4 ^
   --progress-every 1 ^
   --progress-style bar
 ```
+
+`--workers 4` processes bundle classification/export in four worker processes. Start with `--workers 4`; try `6` or `8` only if your disk and CPU still have headroom. Too many workers can slow the run down because UnityPy export and image/audio writes compete for disk I/O.
 
 `--progress-style bar` shows a console progress bar with percentage, elapsed time, ETA, asset count, and error count. `--progress-every 1` refreshes it after every bundle. Use `--progress-style lines` if you want one log line per update, or `--progress-every 0` to disable progress output. These options do not change exported content.
 
@@ -239,7 +243,7 @@ python xzy_yooasset_extractor.py ^
 
 The recommended Windows entry point is `run_wizard_windows.bat`, which lets you choose folders interactively.
 
-The `examples/` directory also contains double-clickable batch files. They now `cd` back to the project root before running, so they can find `xzy_yooasset_extractor.py` even when launched from inside `examples/`. Edit `GAME_ROOT` and `OUT_DIR` inside each file before running:
+The `examples/` directory also contains double-clickable batch files. They now `cd` back to the project root before running, so they can find `xzy_yooasset_extractor.py` even when launched from inside `examples/`. Edit `GAME_ROOT`, `OUT_DIR`, and optionally `WORKERS` inside each file before running:
 
 | File | Purpose |
 | --- | --- |
@@ -317,6 +321,7 @@ Important boundary: this is static evidence, not a runtime truth oracle. `not_fo
 | `--copy-rawfiles` | Copy local `.rawfile` payloads under `assets/raw/<layout>/<package>/...` and add rows to `assets.csv`. These files are not parsed as Unity bundles. |
 | `--keep-bundles` | Save decrypted UnityFS bundles under `decrypted_bundles/`. |
 | `--deps-dir` | Optional dependency directory containing UnityPy. |
+| `--workers` | Number of worker processes for bundle classification/export. Default is `1` for serial mode. Recommended first value for full export: `4`. |
 | `--progress-every` | Refresh progress after every N processed bundles. Defaults to `25`; use `1` for the most visible progress and `0` to disable progress output. |
 | `--progress-style` | Progress style: `bar`, `lines`, or `none`. Default is `bar`. |
 | `--no-manifest-check` | Skip static manifest/catalog reference scanning. |

@@ -115,11 +115,43 @@ assets/ui/Spine/<bundle_hash>/*.png
 - 资源名
 - 输出路径
 - 导出状态
+- manifest 静态引用状态
+
+`manifest_refs.csv` 记录从本地 `ManifestFiles` 里提取出的线索：
+
+- hash-like token
+- `Assets/...` 资源路径
+- 其他包含路径分隔符的可读字符串
+
+`manifest_reference` 的含义：
+
+| 值 | 含义 |
+| --- | --- |
+| `referenced` | 当前 bundle hash 或 asset 名称/路径在本地 manifest 静态扫描中被匹配到。 |
+| `referenced_bundle` | asset 名称未直接匹配，但所在 bundle hash 被本地 manifest 引用。 |
+| `not_found` | 本地 manifest 静态扫描没有找到对应线索。 |
+| `not_checked` | 使用了 `--no-manifest-check`，没有扫描 manifest。 |
+
+这个检查只能回答“本地 manifest 文本/可读字符串中有没有线索”，不能证明运行时一定使用或一定不使用。运行时还可能通过远程 catalog、代码路径、生成地址、二进制表或其他加载逻辑引用资源。
 
 `errors.json` 只记录 bundle 级异常。对象级失败会写进 `assets.csv` 的 `status`，例如 `sprite_failed:...`。
 
-## 7. 局限
+## 7. 进度显示
+
+主循环会先收集本次要处理的 `BundleFiles/**/__data` 列表，所以可以得到总数。进度条显示：
+
+- 已处理 bundle 数 / 总数
+- 百分比
+- `assets.csv` 当前行数
+- 错误数
+- 已耗时
+- 预计剩余时间
+
+`--progress-style bar` 适合人工观察；`--progress-style lines` 适合保存日志；`--progress-every 0` 可以关闭进度。
+
+## 8. 局限
 
 - 不能凭 YooAssets manifest 还原缺失的 bundle。
 - UnityPy 无法解析的 Unity 版本或自定义对象只能列索引。
 - `tail16_xor_non_unity` 可能仍是有效资源，但不是 UnityFS，需要针对具体格式继续分析。
+- `manifest_reference=not_found` 不等于运行时一定不用，只代表当前静态扫描没有找到证据。

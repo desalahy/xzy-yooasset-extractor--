@@ -31,10 +31,14 @@ It is not a universal Unity extractor and it does not download missing bundles f
   - `AudioClip` samples
   - selected raw/text objects
 - Filters export by output category (`ui`, `bgm`, `audio`, `models`, `effects`, and more) or by Unity object type.
+- Shows a real progress display with total bundle count, percentage, elapsed time, ETA, asset row count, and error count.
+- Provides a Windows wizard batch file for choosing the game folder, output folder, and export mode without editing command text.
+- Scans local `ManifestFiles` and records static reference evidence, so exported rows can be compared with local manifest/catalog strings.
 - Writes reproducible indexes:
   - `package_report.csv`
   - `bundles.csv`
   - `assets.csv`
+  - `manifest_refs.csv`
   - `errors.json`
   - `summary.json`
 
@@ -66,6 +70,14 @@ set UNITYPY_DEPS_DIR=C:\path\to\site-packages
 
 ## Quick Start
 
+On Windows, the simplest entry point is:
+
+```bat
+run_wizard_windows.bat
+```
+
+It opens folder pickers for the game root and output folder, then asks which export mode to run.
+
 List available YooAssets packages:
 
 ```bash
@@ -93,7 +105,8 @@ python xzy_yooasset_extractor.py ^
   --out "E:\XZY\UI" ^
   --limit 0 ^
   --execute ^
-  --progress-every 20
+  --progress-every 1 ^
+  --progress-style bar
 ```
 
 Export BGM only:
@@ -107,7 +120,8 @@ python xzy_yooasset_extractor.py ^
   --out "E:\XZY\BGM" ^
   --limit 0 ^
   --execute ^
-  --progress-every 20
+  --progress-every 1 ^
+  --progress-style bar
 ```
 
 Export sound effects and voice clips:
@@ -121,7 +135,8 @@ python xzy_yooasset_extractor.py ^
   --out "E:\XZY\Audio" ^
   --limit 0 ^
   --execute ^
-  --progress-every 20
+  --progress-every 1 ^
+  --progress-style bar
 ```
 
 Export model-related objects:
@@ -134,7 +149,8 @@ python xzy_yooasset_extractor.py ^
   --out "E:\XZY\Models" ^
   --limit 0 ^
   --execute ^
-  --progress-every 20
+  --progress-every 1 ^
+  --progress-style bar
 ```
 
 Export effect-related objects:
@@ -147,7 +163,8 @@ python xzy_yooasset_extractor.py ^
   --out "E:\XZY\Effects" ^
   --limit 0 ^
   --execute ^
-  --progress-every 20
+  --progress-every 1 ^
+  --progress-style bar
 ```
 
 Export every local package with `BundleFiles`:
@@ -158,10 +175,11 @@ python xzy_yooasset_extractor.py ^
   --out "E:\XZY\AllAssets" ^
   --limit 0 ^
   --execute ^
-  --progress-every 20
+  --progress-every 1 ^
+  --progress-style bar
 ```
 
-`--progress-every 20` only controls logging. It prints one progress line after every 20 processed bundles. It does not limit the export count and does not change exported files. Use `--progress-every 0` to disable progress logs.
+`--progress-style bar` shows a console progress bar with percentage, elapsed time, ETA, asset count, and error count. `--progress-every 1` refreshes it after every bundle. Use `--progress-style lines` if you want one log line per update, or `--progress-every 0` to disable progress output. These options do not change exported content.
 
 For a full bundle-mode inventory without Unity object export:
 
@@ -172,7 +190,8 @@ python xzy_yooasset_extractor.py ^
   --limit 0 ^
   --no-export ^
   --execute ^
-  --progress-every 50
+  --progress-every 10 ^
+  --progress-style lines
 ```
 
 Classify/decrypt bundles without Unity object export:
@@ -197,10 +216,13 @@ python xzy_yooasset_extractor.py ^
 
 ## Windows Batch Examples
 
-The `examples/` directory contains double-clickable batch files. Edit `GAME_ROOT` and `OUT_DIR` inside each file before running:
+The recommended Windows entry point is `run_wizard_windows.bat`, which lets you choose folders interactively.
+
+The `examples/` directory also contains double-clickable batch files. They now `cd` back to the project root before running, so they can find `xzy_yooasset_extractor.py` even when launched from inside `examples/`. Edit `GAME_ROOT` and `OUT_DIR` inside each file before running:
 
 | File | Purpose |
 | --- | --- |
+| `run_wizard_windows.bat` | Interactive folder and mode selector. |
 | `examples/extract_all_windows.bat` | Export all local packages with bundle files. |
 | `examples/extract_ui_windows.bat` | Export UI images. |
 | `examples/extract_bgm_windows.bat` | Export BGM AudioClip samples. |
@@ -214,6 +236,7 @@ out/
   package_report.csv
   bundles.csv
   assets.csv
+  manifest_refs.csv
   errors.json
   summary.json
   assets/
@@ -231,7 +254,26 @@ out/
     textures/
 ```
 
-`assets.csv` is the main lookup table. Each row includes package name, bundle hash, bundle mode, Unity object type, `path_id`, original asset name, output category, output path, and export status.
+`assets.csv` is the main lookup table. Each row includes package name, bundle hash, bundle mode, Unity object type, `path_id`, original asset name, output category, output path, export status, and local manifest reference evidence.
+
+## Manifest Reference Check
+
+The extractor performs a static scan of local `ManifestFiles` by default. This helps answer: "is this bundle or object mentioned by the local manifest/catalog data?"
+
+New columns:
+
+| Column | Meaning |
+| --- | --- |
+| `manifest_reference` | `referenced`, `referenced_bundle`, `not_found`, or `not_checked`. |
+| `manifest_match` | The matched hash or asset path string, when one was found. |
+
+Output file:
+
+| File | Purpose |
+| --- | --- |
+| `manifest_refs.csv` | Extracted static strings from local `ManifestFiles`, including hash-like tokens and asset paths. |
+
+Important boundary: this is static evidence, not a runtime truth oracle. `not_found` means the local manifest scan did not find a matching hash/name/path. It does not prove the asset is never used at runtime, because a game can load by code, remote catalog, generated address, binary-only metadata, or a manifest format this simple scanner cannot fully decode.
 
 ## Common Options
 
@@ -248,7 +290,9 @@ out/
 | `--no-export` | Classify/decrypt bundles but skip UnityPy object export. |
 | `--keep-bundles` | Save decrypted UnityFS bundles under `decrypted_bundles/`. |
 | `--deps-dir` | Optional dependency directory containing UnityPy. |
-| `--progress-every` | Print progress after every N processed bundles. Defaults to `25`; use `0` to disable progress logs. |
+| `--progress-every` | Refresh progress after every N processed bundles. Defaults to `25`; use `1` for the most visible progress and `0` to disable progress output. |
+| `--progress-style` | Progress style: `bar`, `lines`, or `none`. Default is `bar`. |
+| `--no-manifest-check` | Skip static `ManifestFiles` reference scanning. |
 | `--list-packages` | Print the package report and exit without processing bundles. |
 | `--fail-on-error` | Return exit code `2` when bundle-level errors are found. Useful for batch scripts or CI. |
 | `--ui-packages` | Packages whose `Texture2D` and `Sprite` objects go under `assets/ui`. Default: `Icon,Background,Main,Spine`. |

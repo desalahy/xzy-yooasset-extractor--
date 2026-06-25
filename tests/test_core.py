@@ -152,6 +152,25 @@ class CoreExtractorTests(unittest.TestCase):
         self.assertTrue(extractor.category_is_enabled("ui", options))
         self.assertFalse(extractor.category_is_enabled("raw", options))
 
+    def test_manifest_index_marks_bundle_and_asset_references(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            yoo_root = Path(tmp) / "yoo"
+            manifest = yoo_root / "Icon" / "ManifestFiles" / "Icon.bytes"
+            manifest.parent.mkdir(parents=True)
+            bundle_hash = "0123456789abcdef"
+            manifest.write_bytes(
+                f"{bundle_hash}\nAssets/GameData/UiIcons/start_button.png\n".encode("utf-8")
+            )
+
+            index = extractor.build_manifest_index(yoo_root, None)
+
+            self.assertEqual(extractor.manifest_match_for_bundle(bundle_hash, index), ("referenced", bundle_hash))
+            self.assertEqual(
+                extractor.manifest_match_for_asset("start_button", bundle_hash, index),
+                ("referenced", "assets/gamedata/uiicons/start_button.png"),
+            )
+            self.assertGreaterEqual(len(index.rows), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

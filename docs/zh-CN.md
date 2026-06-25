@@ -12,6 +12,16 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
+## Windows 最简单入口
+
+双击项目根目录下的：
+
+```bat
+run_wizard_windows.bat
+```
+
+它会弹窗让你选择游戏根目录和输出目录，然后让你选择导出模式：UI、BGM、音效/语音、模型、特效、全量或只做 bundle 索引。
+
 ## 先看有哪些包
 
 先列出本地 YooAssets 包，确认哪些包有 `BundleFiles`。
@@ -53,12 +63,13 @@ python xzy_yooasset_extractor.py ^
   --out "E:\XZY\AllAssets" ^
   --limit 0 ^
   --execute ^
-  --progress-every 20
+  --progress-every 1 ^
+  --progress-style bar
 ```
 
 这会尽量导出 UnityPy 能读取的资源，包括 UI 图片、BGM、音效、语音、贴图、模型相关对象、动画相关对象、特效相关对象、文本和材质等。
 
-`--progress-every 20` 只控制进度日志：每处理 20 个 bundle 打印一次当前进度。它不会限制导出数量，也不会影响导出内容。设置为 `0` 可以关闭进度输出。
+`--progress-style bar` 会显示可视化进度条，包含总数、百分比、已耗时、预计剩余时间、资产行数和错误数。`--progress-every 1` 表示每处理 1 个 bundle 刷新一次。它不会限制导出数量，也不会影响导出内容。设置 `--progress-style lines` 可以改成逐行日志，设置 `--progress-every 0` 可以关闭进度输出。
 
 注意：全量导出可能很大，也可能运行很久。建议先用 `--list-packages` 看包数量，再用少量包测试，确认没问题后再全量导出。
 
@@ -73,7 +84,8 @@ python xzy_yooasset_extractor.py ^
   --limit 0 ^
   --no-export ^
   --execute ^
-  --progress-every 50
+  --progress-every 10 ^
+  --progress-style lines
 ```
 
 这会生成 `package_report.csv`、`bundles.csv`、`errors.json`、`summary.json`，适合先做资源包盘点和解密模式确认。
@@ -89,7 +101,8 @@ python xzy_yooasset_extractor.py ^
   --out "E:\XZY\UI" ^
   --limit 0 ^
   --execute ^
-  --progress-every 20
+  --progress-every 1 ^
+  --progress-style bar
 ```
 
 说明：
@@ -111,7 +124,8 @@ python xzy_yooasset_extractor.py ^
   --out "E:\XZY\BGM" ^
   --limit 0 ^
   --execute ^
-  --progress-every 20
+  --progress-every 1 ^
+  --progress-style bar
 ```
 
 `Bgm` 包会被归到 `assets/bgm/`。`--types AudioClip` 可以避免把同一个包里的非音频对象也写出来。
@@ -127,7 +141,8 @@ python xzy_yooasset_extractor.py ^
   --out "E:\XZY\Audio" ^
   --limit 0 ^
   --execute ^
-  --progress-every 20
+  --progress-every 1 ^
+  --progress-style bar
 ```
 
 `Se` 通常是音效，`Voice` 通常是语音。它们会归到 `assets/audio/`。
@@ -142,7 +157,8 @@ python xzy_yooasset_extractor.py ^
   --out "E:\XZY\Models" ^
   --limit 0 ^
   --execute ^
-  --progress-every 20
+  --progress-every 1 ^
+  --progress-style bar
 ```
 
 说明：
@@ -162,7 +178,8 @@ python xzy_yooasset_extractor.py ^
   --out "E:\XZY\Effects" ^
   --limit 0 ^
   --execute ^
-  --progress-every 20
+  --progress-every 1 ^
+  --progress-style bar
 ```
 
 说明：
@@ -182,7 +199,8 @@ python xzy_yooasset_extractor.py ^
   --out "E:\XZY\Animation" ^
   --limit 0 ^
   --execute ^
-  --progress-every 20
+  --progress-every 1 ^
+  --progress-style bar
 ```
 
 `animation` 通常包含 `AnimationClip`、`AnimatorController`、`Avatar` 等对象，也会包含部分 Spine 文本/二进制数据。
@@ -229,6 +247,7 @@ out/
   package_report.csv
   bundles.csv
   assets.csv
+  manifest_refs.csv
   errors.json
   summary.json
   assets/
@@ -251,6 +270,7 @@ out/
 - `package_report.csv`: 每个包是否存在 `BundleFiles`、bundle 数量、manifest 数量。
 - `bundles.csv`: 每个 bundle 的识别模式、原始头部、解密后头部。
 - `assets.csv`: Unity 对象清单，包含类型、`path_id`、资源名、分类、导出路径、状态。
+- `manifest_refs.csv`: 从本地 `ManifestFiles` 里静态提取出来的 hash、资源路径和可读字符串。
 - `errors.json`: bundle 级错误。
 - `summary.json`: 本次运行摘要。
 
@@ -258,12 +278,33 @@ out/
 
 如果使用了 `--categories` 或 `--types`，被过滤掉的对象仍会出现在 `assets.csv`，状态会是 `skipped_category` 或 `skipped_type`。
 
+## 如何判断是否被当前项目实际引用
+
+脚本现在会默认扫描本地 `ManifestFiles`，并在 `bundles.csv` 和 `assets.csv` 里写入：
+
+| 字段 | 含义 |
+| --- | --- |
+| `manifest_reference` | `referenced`、`referenced_bundle`、`not_found` 或 `not_checked`。 |
+| `manifest_match` | 匹配到的 hash 或资源路径。 |
+
+这些字段只能说明“本地 manifest 静态扫描是否找到线索”，不能 100% 证明运行时是否使用。原因是游戏可能通过代码、远程 catalog、生成地址、二进制表或当前扫描器没完全解析的格式加载资源。
+
+实用判断方式：
+
+- `referenced`: 本地 manifest 里找到了明确 hash、资源名或路径线索，优先认为和项目有关。
+- `referenced_bundle`: asset 名称没直接匹配，但它所在 bundle hash 被 manifest 引用，说明这一包更可能有用。
+- `not_found`: 本地 manifest 静态扫描没找到，不等于运行时一定没用。
+- `not_checked`: 使用了 `--no-manifest-check`，没有做检查。
+
 ## Windows 批处理示例
 
-`examples/` 目录里有几份可以双击运行的 `.bat` 示例。运行前先打开文件，把 `GAME_ROOT` 和 `OUT_DIR` 改成你自己的路径。
+推荐先用项目根目录的 `run_wizard_windows.bat`，它可以弹窗选择游戏目录和输出目录。
+
+`examples/` 目录里还有几份可以双击运行的 `.bat` 示例。它们会自动回到项目根目录再运行，所以能找到外层的 `xzy_yooasset_extractor.py`。运行前先打开文件，把 `GAME_ROOT` 和 `OUT_DIR` 改成你自己的路径。
 
 | 文件 | 用途 |
 | --- | --- |
+| `run_wizard_windows.bat` | 交互选择游戏目录、输出目录和导出模式。 |
 | `examples/extract_all_windows.bat` | 全量导出所有本地包。 |
 | `examples/extract_ui_windows.bat` | 只导出 UI 图片。 |
 | `examples/extract_bgm_windows.bat` | 只导出 BGM。 |
@@ -286,8 +327,11 @@ out/
 | `--no-export` | 只识别和解密 bundle，不让 UnityPy 导出内部对象。 |
 | `--keep-bundles` | 保存解密后的 UnityFS bundle。 |
 | `--deps-dir C:\path\to\site-packages` | 指定 UnityPy 等依赖所在目录。 |
-| `--progress-every 20` | 每处理 20 个 bundle 打印一次进度。只影响日志，不影响导出内容。 |
+| `--progress-every 1` | 每处理 1 个 bundle 刷新一次进度，最直观。 |
 | `--progress-every 0` | 关闭进度输出。 |
+| `--progress-style bar` | 显示可视化进度条，默认值。 |
+| `--progress-style lines` | 每次刷新输出一行日志，适合保存日志。 |
+| `--no-manifest-check` | 跳过本地 `ManifestFiles` 静态引用检查。 |
 | `--list-packages` | 只列出包信息，然后退出。 |
 | `--fail-on-error` | 如果出现 bundle 级错误，进程返回码为 `2`，适合批处理或 CI 检查。 |
 | `--ui-packages Icon,Background,Main,Spine` | 自定义哪些包的图片默认归到 `assets/ui`。 |

@@ -42,6 +42,8 @@ ASSET_FIELDS = [
     "category",
     "output",
     "status",
+    "manifest_reference",
+    "manifest_match",
 ]
 
 BUNDLE_FIELDS = [
@@ -52,6 +54,8 @@ BUNDLE_FIELDS = [
     "length",
     "raw_head",
     "decoded_head",
+    "manifest_reference",
+    "manifest_match",
 ]
 
 PACKAGE_FIELDS = [
@@ -63,6 +67,21 @@ PACKAGE_FIELDS = [
     "total_files",
     "total_bytes",
 ]
+
+MANIFEST_REF_FIELDS = [
+    "package",
+    "manifest",
+    "kind",
+    "value",
+]
+
+ASSET_PATH_RE = re.compile(
+    r"Assets[/\\][^\x00\r\n\"'<>|]{1,240}?\."
+    r"(?:png|jpg|jpeg|tga|psd|prefab|mat|fbx|anim|controller|asset|bytes|txt|json|shader|wav|ogg|mp3|acb|awb|mp4|atlas|skel)",
+    re.IGNORECASE,
+)
+HASH_TOKEN_RE = re.compile(r"\b[a-fA-F0-9]{16,64}\b")
+PRINTABLE_RUN_RE = re.compile(r"[A-Za-z0-9_./\\:@$#%+=,\- ]{4,240}")
 
 
 @dataclass
@@ -95,6 +114,60 @@ class ExportOptions:
 class ExportContext:
     options: ExportOptions
     used_outputs: set[Path]
+    manifest_index: ManifestIndex | None = None
+
+
+@dataclass
+class ManifestIndex:
+    rows: list[dict[str, Any]]
+    hash_refs: set[str]
+    asset_refs: tuple[str, ...]
+    asset_cache: dict[str, tuple[str, str]]
+
+
+class ProgressReporter:
+    def __init__(self, total: int, style: str, every: int) -> None:
+        self.total = max(total, 0)
+        self.style = "none" if every <= 0 else style
+        self.every = max(every, 0)
+        self.start_time = time.time()
+        self.last_len = 0
+
+    def update(self, processed: int, asset_count: int, error_count: int, current: str = "", force: bool = False) -> None:
+        if self.style == "none" or self.total <= 0:
+            return
+        if not force and self.every and processed % self.every != 0 and processed != self.total:
+            return
+
+        elapsed = time.time() - self.start_time
+        rate = processed / elapsed if elapsed > 0 else 0
+        remaining = (self.total - processed) / rate if rate > 0 else 0
+        percent = (processed / self.total) * 100 if self.total else 100
+
+        if self.style == "lines":
+            print(
+                f"[progress] {processed}/{self.total} {percent:5.1f}% "
+                f"assets={asset_count} errors={error_count} "
+                f"elapsed={format_duration(elapsed)} eta={format_duration(remaining)} {current}",
+                flush=True,
+            )
+            return
+
+        width = 28
+        filled = int(width * processed / self.total) if self.total else width
+        bar = "#" * filled + "-" * (width - filled)
+        message = (
+            f"\r[{bar}] {processed}/{self.total} {percent:5.1f}% "
+            f"assets={asset_count} errors={error_count} "
+            f"elapsed={format_duration(elapsed)} eta={format_duration(remaining)} {current}"
+        )
+        padding = " " * max(0, self.last_len - len(message))
+        print(message + padding, end="", flush=True)
+        self.last_len = len(message)
+
+    def finish(self) -> None:
+        if self.style == "bar" and self.last_len:
+            print()
 
 
 def parse_csv(value: str | None) -> set[str] | None:
@@ -116,6 +189,26 @@ def safe_name(value: str, fallback: str = "unnamed", max_len: int = 96) -> str:
     return value[:max_len]
 
 
+def normalize_ref(value: str) -> str:
+    return value.replace("\\", "/").strip().lower()
+
+
+def short_path(path: Path, base: Path) -> str:
+    try:
+        return str(path.relative_to(base))
+    except ValueError:
+        return str(path)
+
+
+def format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    minutes, sec = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours:d}:{minutes:02d}:{sec:02d}"
+    return f"{minutes:02d}:{sec:02d}"
+
+
 def is_unity_bundle(data: bytes) -> bool:
     return any(data.startswith(magic) for magic in UNITY_MAGICS)
 
@@ -126,6 +219,87 @@ def xor_with_tail_key(blob: bytes) -> bytes | None:
     key = blob[-16:]
     data = blob[:-16]
     return bytes(data[i] ^ key[i % 16] for i in range(len(data)))
+
+
+def extract_manifest_strings(data: bytes) -> set[str]:
+    text = data.decode("utf-8", errors="ignore")
+    refs = {match.group(0).strip("\x00\r\n\t ") for match in ASSET_PATH_RE.finditer(text)}
+    refs.update(match.group(0).strip("\x00\r\n\t ") for match in HASH_TOKEN_RE.finditer(text))
+    for match in PRINTABLE_RUN_RE.finditer(text):
+        value = match.group(0).strip("\x00\r\n\t ")
+        if "/" in value or "\\" in value:
+            refs.add(value)
+    return {ref for ref in refs if ref}
+
+
+def build_manifest_index(yoo_root: Path, packages: set[str] | None) -> ManifestIndex:
+    rows: list[dict[str, Any]] = []
+    hash_refs: set[str] = set()
+    asset_refs: set[str] = set()
+
+    for package_root in iter_package_roots(yoo_root, packages):
+        manifest_dir = package_root / "ManifestFiles"
+        if not manifest_dir.exists():
+            continue
+        for manifest_path in sorted(p for p in manifest_dir.rglob("*") if p.is_file()):
+            try:
+                refs = extract_manifest_strings(manifest_path.read_bytes())
+            except OSError:
+                continue
+            for ref in sorted(refs):
+                normalized = normalize_ref(ref)
+                kind = "hash" if HASH_TOKEN_RE.fullmatch(ref) else "asset_path" if normalized.startswith("assets/") else "text"
+                if kind == "hash":
+                    hash_refs.add(normalized)
+                else:
+                    asset_refs.add(normalized)
+                rows.append(
+                    {
+                        "package": package_root.name,
+                        "manifest": short_path(manifest_path, package_root),
+                        "kind": kind,
+                        "value": ref,
+                    }
+                )
+
+    return ManifestIndex(rows=rows, hash_refs=hash_refs, asset_refs=tuple(sorted(asset_refs)), asset_cache={})
+
+
+def manifest_match_for_bundle(bundle_hash: str, index: ManifestIndex | None) -> tuple[str, str]:
+    if index is None:
+        return "not_checked", ""
+    normalized = normalize_ref(bundle_hash)
+    if normalized in index.hash_refs:
+        return "referenced", bundle_hash
+    return "not_found", ""
+
+
+def manifest_match_for_asset(asset_name: str, bundle_hash: str, index: ManifestIndex | None) -> tuple[str, str]:
+    if index is None:
+        return "not_checked", ""
+    bundle_status, bundle_match = manifest_match_for_bundle(bundle_hash, index)
+    normalized_name = normalize_ref(asset_name)
+    if not normalized_name:
+        return bundle_status, bundle_match
+    if normalized_name in index.asset_cache:
+        return index.asset_cache[normalized_name]
+
+    best = ""
+    for ref in index.asset_refs:
+        ref_name = ref.rsplit("/", 1)[-1]
+        ref_stem = ref_name.rsplit(".", 1)[0]
+        if normalized_name == ref_name or normalized_name == ref_stem or normalized_name in ref or ref_stem in normalized_name:
+            best = ref
+            break
+
+    if best:
+        result = ("referenced", best)
+    elif bundle_status == "referenced":
+        result = ("referenced_bundle", bundle_match)
+    else:
+        result = ("not_found", "")
+    index.asset_cache[normalized_name] = result
+    return result
 
 
 def import_unitypy(deps_dir: str | None) -> Any:
@@ -324,7 +498,17 @@ def write_bytes(path: Path, data: bytes, execute: bool) -> None:
     path.write_bytes(data)
 
 
-def row_for(bundle: BundleInput, obj: Any, type_name: str, asset_name: str, category: str, target: Path | str | None, status: str, out_root: Path) -> dict[str, Any]:
+def row_for(
+    bundle: BundleInput,
+    obj: Any,
+    type_name: str,
+    asset_name: str,
+    category: str,
+    target: Path | str | None,
+    status: str,
+    out_root: Path,
+    manifest_index: ManifestIndex | None = None,
+) -> dict[str, Any]:
     output = ""
     if target:
         target_path = Path(target)
@@ -332,6 +516,7 @@ def row_for(bundle: BundleInput, obj: Any, type_name: str, asset_name: str, cate
             output = str(target_path.relative_to(out_root))
         except ValueError:
             output = str(target_path)
+    manifest_reference, manifest_match = manifest_match_for_asset(asset_name, bundle.hash_name, manifest_index)
 
     return {
         "package": bundle.package,
@@ -344,6 +529,8 @@ def row_for(bundle: BundleInput, obj: Any, type_name: str, asset_name: str, cate
         "category": category,
         "output": output,
         "status": status,
+        "manifest_reference": manifest_reference,
+        "manifest_match": manifest_match,
     }
 
 
@@ -372,7 +559,7 @@ def export_object(obj: Any, bundle: BundleInput, ctx: ExportContext) -> list[dic
         category = category_for_type(type_name, asset_name, bundle.package, options)
         skip_status = export_filter_status(category, type_name, options)
         if skip_status:
-            return [row_for(bundle, obj, type_name, asset_name, category, None, skip_status, out_root)]
+            return [row_for(bundle, obj, type_name, asset_name, category, None, skip_status, out_root, ctx.manifest_index)]
 
         if type_name == "Texture2D":
             try:
@@ -382,9 +569,9 @@ def export_object(obj: Any, bundle: BundleInput, ctx: ExportContext) -> list[dic
                     if options.execute:
                         target.parent.mkdir(parents=True, exist_ok=True)
                         image.save(target)
-                    return [row_for(bundle, obj, type_name, asset_name, category, target, "exported_png", out_root)]
+                    return [row_for(bundle, obj, type_name, asset_name, category, target, "exported_png", out_root, ctx.manifest_index)]
             except Exception as exc:
-                return [row_for(bundle, obj, type_name, asset_name, category, None, f"texture_failed:{exc}", out_root)]
+                return [row_for(bundle, obj, type_name, asset_name, category, None, f"texture_failed:{exc}", out_root, ctx.manifest_index)]
 
         if type_name == "Sprite":
             try:
@@ -394,9 +581,9 @@ def export_object(obj: Any, bundle: BundleInput, ctx: ExportContext) -> list[dic
                     if options.execute:
                         target.parent.mkdir(parents=True, exist_ok=True)
                         image.save(target)
-                    return [row_for(bundle, obj, type_name, asset_name, category, target, "exported_sprite_png", out_root)]
+                    return [row_for(bundle, obj, type_name, asset_name, category, target, "exported_sprite_png", out_root, ctx.manifest_index)]
             except Exception as exc:
-                return [row_for(bundle, obj, type_name, asset_name, category, None, f"sprite_failed:{exc}", out_root)]
+                return [row_for(bundle, obj, type_name, asset_name, category, None, f"sprite_failed:{exc}", out_root, ctx.manifest_index)]
 
         if type_name == "AudioClip":
             rows = []
@@ -407,7 +594,7 @@ def export_object(obj: Any, bundle: BundleInput, ctx: ExportContext) -> list[dic
                     sample_asset_name = Path(sample_name).stem or asset_name
                     target = object_output_path(ctx, bundle, category, type_name, sample_asset_name, path_id, ext)
                     write_bytes(target, sample_data, options.execute)
-                    rows.append(row_for(bundle, obj, type_name, asset_name, category, target, "exported_audio_sample", out_root))
+                    rows.append(row_for(bundle, obj, type_name, asset_name, category, target, "exported_audio_sample", out_root, ctx.manifest_index))
             if rows:
                 return rows
 
@@ -421,12 +608,12 @@ def export_object(obj: Any, bundle: BundleInput, ctx: ExportContext) -> list[dic
             ext = ".txt" if type_name in ("TextAsset", "MonoScript", "Shader") else ".bin"
             target = object_output_path(ctx, bundle, category, type_name, asset_name, path_id, ext)
             write_bytes(target, raw, options.execute)
-            return [row_for(bundle, obj, type_name, asset_name, category, target, "exported_raw", out_root)]
+            return [row_for(bundle, obj, type_name, asset_name, category, target, "exported_raw", out_root, ctx.manifest_index)]
 
-        return [row_for(bundle, obj, type_name, asset_name, category, None, "listed_only", out_root)]
+        return [row_for(bundle, obj, type_name, asset_name, category, None, "listed_only", out_root, ctx.manifest_index)]
     except Exception as exc:
         type_name = getattr(getattr(obj, "type", None), "name", "Unknown")
-        return [row_for(bundle, obj, type_name, "", "", None, f"object_failed:{exc}", ctx.options.out_root)]
+        return [row_for(bundle, obj, type_name, "", "", None, f"object_failed:{exc}", ctx.options.out_root, ctx.manifest_index)]
 
 
 def write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) -> None:
@@ -453,6 +640,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--keep-bundles", action="store_true", help="Write decrypted UnityFS bundles under decrypted_bundles/.")
     parser.add_argument("--deps-dir", default="", help="Optional directory containing installed Python dependencies, such as UnityPy.")
     parser.add_argument("--progress-every", type=int, default=25, help="Print progress every N processed bundles. Use 0 to disable.")
+    parser.add_argument("--progress-style", choices=("bar", "lines", "none"), default="bar", help="Progress display style. Use lines for log files.")
+    parser.add_argument("--no-manifest-check", action="store_true", help="Skip ManifestFiles static reference scan.")
     parser.add_argument("--list-packages", action="store_true", help="Print package report and exit.")
     parser.add_argument("--fail-on-error", action="store_true", help="Return exit code 2 when bundle-level errors are found.")
     parser.add_argument("--ui-packages", default="Icon,Background,Main,Spine", help="Packages whose Texture2D/Sprite outputs should be grouped under assets/ui.")
@@ -490,6 +679,14 @@ def main() -> int:
         print(json.dumps(package_rows, ensure_ascii=False, indent=2))
         return 0
 
+    bundle_paths = list(iter_bundle_files(yoo_root, packages))
+    total_bundles = len(bundle_paths)
+    selected_bundles = bundle_paths[: args.limit] if args.limit else bundle_paths
+
+    manifest_index = None
+    if not args.no_manifest_check:
+        manifest_index = build_manifest_index(yoo_root, packages)
+
     unitypy = None
     if not args.no_export:
         unitypy = import_unitypy(args.deps_dir or None)
@@ -507,20 +704,27 @@ def main() -> int:
         animation_packages=parse_csv_lower(args.animation_packages),
         unitypy=unitypy,
     )
-    ctx = ExportContext(options=options, used_outputs=set())
+    ctx = ExportContext(options=options, used_outputs=set(), manifest_index=manifest_index)
 
     asset_rows: list[dict[str, Any]] = []
     bundle_rows: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
 
     processed = 0
-    for package_root, data_path in iter_bundle_files(yoo_root, packages):
-        if args.limit and processed >= args.limit:
-            break
+    progress = ProgressReporter(len(selected_bundles), args.progress_style, args.progress_every)
+    if selected_bundles and args.progress_style != "none":
+        print(
+            f"Processing {len(selected_bundles)} bundle(s) "
+            f"from {total_bundles} discovered bundle(s). "
+            f"manifest_refs={len(manifest_index.rows) if manifest_index else 'skipped'}",
+            flush=True,
+        )
+    for package_root, data_path in selected_bundles:
         processed += 1
 
         try:
             bundle = classify_bundle(data_path, package_root)
+            manifest_reference, manifest_match = manifest_match_for_bundle(bundle.hash_name, manifest_index)
             bundle_rows.append(
                 {
                     "package": bundle.package,
@@ -530,6 +734,8 @@ def main() -> int:
                     "length": bundle.source_path.stat().st_size,
                     "raw_head": bundle.raw_head[:16].hex(" "),
                     "decoded_head": bundle.decoded_head[:16].hex(" ") if bundle.decoded_head else "",
+                    "manifest_reference": manifest_reference,
+                    "manifest_match": manifest_match,
                 }
             )
 
@@ -556,11 +762,8 @@ def main() -> int:
                 }
             )
 
-        if args.progress_every and processed % args.progress_every == 0:
-            print(
-                f"[{processed}] bundles processed, assets={len(asset_rows)}, errors={len(errors)}",
-                flush=True,
-            )
+        progress.update(processed, len(asset_rows), len(errors), f"{package_root.name}/{data_path.parent.name}")
+    progress.finish()
 
     bundle_modes = Counter(row["mode"] for row in bundle_rows)
     asset_statuses = Counter(row["status"] for row in asset_rows)
@@ -575,8 +778,11 @@ def main() -> int:
         "categories": sorted(categories) if categories else "all",
         "types": sorted(types) if types else "all",
         "processed_bundles": processed,
+        "discovered_bundles": total_bundles,
         "asset_rows": len(asset_rows),
         "errors": len(errors),
+        "manifest_check": "skipped" if manifest_index is None else "static_scan",
+        "manifest_refs": 0 if manifest_index is None else len(manifest_index.rows),
         "bundle_modes": dict(bundle_modes),
         "asset_statuses": dict(asset_statuses),
         "package_counts": dict(package_counts),
@@ -588,6 +794,8 @@ def main() -> int:
         write_csv(out_root / "package_report.csv", PACKAGE_FIELDS, package_rows)
         write_csv(out_root / "bundles.csv", BUNDLE_FIELDS, bundle_rows)
         write_csv(out_root / "assets.csv", ASSET_FIELDS, asset_rows)
+        if manifest_index is not None:
+            write_csv(out_root / "manifest_refs.csv", MANIFEST_REF_FIELDS, manifest_index.rows)
         (out_root / "errors.json").write_text(json.dumps(errors, ensure_ascii=False, indent=2), encoding="utf-8")
         (out_root / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 

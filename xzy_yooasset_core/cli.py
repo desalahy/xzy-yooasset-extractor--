@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 import traceback
 from collections import Counter
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import BrokenExecutor, ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,8 +20,10 @@ from .exporter import (
     export_object,
     import_unitypy,
     load_unity_env,
+    raw_bundle_row,
     rawfile_output_path,
     rawfile_row,
+    write_prefab_graph,
     write_bytes,
 )
 from .manifest import build_manifest_index, manifest_match_for_bundle
@@ -64,7 +67,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-export", action="store_true", help="Classify/decrypt bundles only; skip UnityPy object export.")
     parser.add_argument("--copy-rawfiles", action="store_true", help="Copy local .rawfile payloads under assets/raw and add them to assets.csv.")
     parser.add_argument("--keep-bundles", action="store_true", help="Write decrypted UnityFS bundles under decrypted_bundles/.")
-    parser.add_argument("--deps-dir", default="", help="Optional directory containing installed Python dependencies, such as UnityPy.")
     parser.add_argument("--workers", type=int, default=1, help="Number of worker processes for bundle classification/export. Use 1 for serial mode.")
     parser.add_argument("--progress-every", type=int, default=25, help="Print progress every N processed bundles. Use 0 to disable.")
     parser.add_argument("--progress-style", choices=("bar", "lines", "none"), default="bar", help="Progress display style. Use lines for log files.")
@@ -138,7 +140,8 @@ def process_bundle_candidate(
     asset_rows: list[dict[str, Any]] = []
 
     try:
-        load_bundle_bytes = not options.no_export or options.keep_bundles
+        wants_raw_bundle = category_is_enabled("raw", options)
+        load_bundle_bytes = not options.no_export or options.keep_bundles or wants_raw_bundle
         bundle = classify_bundle(
             data_path,
             package_root,
@@ -158,10 +161,13 @@ def process_bundle_candidate(
                 env = load_unity_env(unitypy, bundle.unity_bytes)
                 for obj in env.objects:
                     asset_rows.extend(export_object(obj, bundle, local_ctx))
+                asset_rows.extend(write_prefab_graph(local_ctx, bundle))
         elif bundle.unity_bytes:
             if category_is_enabled("raw", options):
                 target = options.out_root / "raw" / bundle.layout / bundle.package / f"{bundle.hash_name}.bin"
                 write_bytes(target, bundle.unity_bytes, options.execute)
+                status = "exported_raw_bundle" if options.execute else "listed_raw_bundle"
+                asset_rows.append(raw_bundle_row(bundle, target, status, options.out_root, manifest_index))
 
         return BundleProcessResult(index, progress_label, bundle_row, asset_rows, None)
     except Exception as exc:
@@ -178,14 +184,14 @@ def process_bundle_candidate(
         )
 
 
-def init_bundle_worker(options: ExportOptions, manifest_index: ManifestIndex | None, deps_dir: str | None) -> None:
+def init_bundle_worker(options: ExportOptions, manifest_index: ManifestIndex | None) -> None:
     global _WORKER_OPTIONS, _WORKER_MANIFEST_INDEX, _WORKER_UNITYPY
 
     _WORKER_OPTIONS = options
     _WORKER_MANIFEST_INDEX = manifest_index
     _WORKER_UNITYPY = None
     if not options.no_export:
-        _WORKER_UNITYPY = import_unitypy(deps_dir)
+        _WORKER_UNITYPY = import_unitypy()
         _WORKER_OPTIONS.unitypy = _WORKER_UNITYPY
 
 
@@ -194,6 +200,62 @@ def process_bundle_candidate_worker(args: tuple[int, BundleCandidate]) -> Bundle
         raise RuntimeError("bundle worker was not initialized")
     index, candidate = args
     return process_bundle_candidate(index, candidate, _WORKER_OPTIONS, _WORKER_MANIFEST_INDEX, _WORKER_UNITYPY)
+
+
+def run_bundles_serial(
+    selected_bundles: list[BundleCandidate],
+    options: ExportOptions,
+    manifest_index: ManifestIndex | None,
+    unitypy: Any | None,
+    progress: ProgressReporter,
+) -> tuple[dict[int, BundleProcessResult], int, int, int]:
+    results: dict[int, BundleProcessResult] = {}
+    processed = 0
+    completed_asset_rows = 0
+    completed_errors = 0
+    for index, candidate in enumerate(selected_bundles, start=1):
+        result = process_bundle_candidate(index, candidate, options, manifest_index, unitypy)
+        results[index] = result
+        processed += 1
+        completed_asset_rows += len(result.asset_rows)
+        if result.error:
+            completed_errors += 1
+        progress.update(processed, completed_asset_rows, completed_errors, result.progress_label)
+    return results, processed, completed_asset_rows, completed_errors
+
+
+def run_bundles_parallel(
+    selected_bundles: list[BundleCandidate],
+    args: argparse.Namespace,
+    out_root: Path,
+    categories: set[str] | None,
+    types: set[str] | None,
+    manifest_index: ManifestIndex | None,
+    progress: ProgressReporter,
+) -> tuple[dict[int, BundleProcessResult], int, int, int]:
+    results: dict[int, BundleProcessResult] = {}
+    processed = 0
+    completed_asset_rows = 0
+    completed_errors = 0
+    worker_options = build_export_options(args, out_root, categories, types, None)
+    with ProcessPoolExecutor(
+        max_workers=args.workers,
+        initializer=init_bundle_worker,
+        initargs=(worker_options, manifest_index),
+    ) as executor:
+        futures = [
+            executor.submit(process_bundle_candidate_worker, (index, candidate))
+            for index, candidate in enumerate(selected_bundles, start=1)
+        ]
+        for future in as_completed(futures):
+            result = future.result()
+            results[result.index] = result
+            processed += 1
+            completed_asset_rows += len(result.asset_rows)
+            if result.error:
+                completed_errors += 1
+            progress.update(processed, completed_asset_rows, completed_errors, result.progress_label)
+    return results, processed, completed_asset_rows, completed_errors
 
 
 def main() -> int:
@@ -234,7 +296,7 @@ def main() -> int:
 
     unitypy = None
     if not args.no_export and args.workers == 1:
-        unitypy = import_unitypy(args.deps_dir or None)
+        unitypy = import_unitypy()
 
     options = build_export_options(args, out_root, categories, types, unitypy)
     ctx = ExportContext(options=options, used_outputs=set(), manifest_index=manifest_index)
@@ -258,33 +320,28 @@ def main() -> int:
     completed_asset_rows = 0
     completed_errors = 0
     if args.workers == 1:
-        for index, candidate in enumerate(selected_bundles, start=1):
-            result = process_bundle_candidate(index, candidate, options, manifest_index, unitypy)
-            results[index] = result
-            processed += 1
-            completed_asset_rows += len(result.asset_rows)
-            if result.error:
-                completed_errors += 1
-            progress.update(processed, completed_asset_rows, completed_errors, result.progress_label)
+        results, processed, completed_asset_rows, completed_errors = run_bundles_serial(
+            selected_bundles, options, manifest_index, unitypy, progress
+        )
     else:
-        worker_options = build_export_options(args, out_root, categories, types, None)
-        with ProcessPoolExecutor(
-            max_workers=args.workers,
-            initializer=init_bundle_worker,
-            initargs=(worker_options, manifest_index, args.deps_dir or None),
-        ) as executor:
-            futures = [
-                executor.submit(process_bundle_candidate_worker, (index, candidate))
-                for index, candidate in enumerate(selected_bundles, start=1)
-            ]
-            for future in as_completed(futures):
-                result = future.result()
-                results[result.index] = result
-                processed += 1
-                completed_asset_rows += len(result.asset_rows)
-                if result.error:
-                    completed_errors += 1
-                progress.update(processed, completed_asset_rows, completed_errors, result.progress_label)
+        try:
+            results, processed, completed_asset_rows, completed_errors = run_bundles_parallel(
+                selected_bundles, args, out_root, categories, types, manifest_index, progress
+            )
+        except (BrokenExecutor, OSError) as exc:
+            print(
+                f"warning: multiprocessing unavailable ({exc.__class__.__name__}: {exc}); "
+                f"falling back to a single worker",
+                file=sys.stderr,
+                flush=True,
+            )
+            if unitypy is None and not args.no_export:
+                unitypy = import_unitypy()
+                options.unitypy = unitypy
+            progress = ProgressReporter(len(selected_bundles), args.progress_style, args.progress_every)
+            results, processed, completed_asset_rows, completed_errors = run_bundles_serial(
+                selected_bundles, options, manifest_index, unitypy, progress
+            )
     progress.finish()
 
     for index in range(1, len(selected_bundles) + 1):

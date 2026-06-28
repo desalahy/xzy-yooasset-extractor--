@@ -60,6 +60,6 @@ def classify_bundle(
         decoded = xor_with_tail_key(path.read_bytes()) if load_bytes else None
         return BundleInput(layout, package, bundle_hash, path, "tail16_xor_unityfs", decoded, raw_head, decoded_head)
     if key:
-        decoded = xor_with_tail_key(path.read_bytes()) if load_bytes else None
-        return BundleInput(layout, package, bundle_hash, path, "tail16_xor_non_unity", decoded, raw_head, decoded_head)
+        raw_bytes = path.read_bytes() if load_bytes else None
+        return BundleInput(layout, package, bundle_hash, path, "non_unity_raw", raw_bytes, raw_head, decoded_head)
     return BundleInput(layout, package, bundle_hash, path, "unknown", None, raw_head, b"")

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +45,7 @@ class ManifestIndex:
     hash_refs: set[str]
     asset_refs: tuple[str, ...]
     asset_cache: dict[str, tuple[str, str]]
+    hash_to_assets: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
 
 @dataclass
@@ -66,4 +67,5 @@ class ExportOptions:
 class ExportContext:
     options: ExportOptions
     used_outputs: set[Path]
+    prefab_graphs: dict[tuple[str, str, str], dict[str, Any]] = field(default_factory=dict)
     manifest_index: ManifestIndex | None = None

@@ -1,4 +1,4 @@
-# XZY YooAsset Extractor 中文说明
+﻿# XZY YooAsset Extractor 中文说明
 
 这是一个本地研究和学习用的 YooAssets/Unity 资源解包工具。使用 `--game-root` 时，它会同时扫描两个本地 YooAssets 来源：
 
@@ -9,19 +9,25 @@
 
 ## 安装
 
-推荐 Python 3.10 或更新版本。
+推荐 Python 3.10 或更新版本。项目依赖统一交给 `uv` 管理，不要手工创建额外的依赖目录。
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate
-python -m pip install -r requirements.txt
+uv sync
+```
+
+如果你的机器上 uv 读取全局 managed Python 目录时报权限错误，可以先指定已有 Python 解释器：
+
+```bat
+set UV_PYTHON=D:\Python\python.exe
+uv sync
 ```
 
 ## 项目代码结构
 
 | 路径 | 作用 |
 | --- | --- |
-| `xzy_yooasset_extractor.py` | 兼容入口文件。继续用 `python xzy_yooasset_extractor.py ...` 运行即可。 |
+| `agent.md` | 给下一个 AI 接手项目用的交接文档。 |
+| `xzy_yooasset_extractor.py` | 兼容入口文件。继续用 `uv run python xzy_yooasset_extractor.py ...` 运行即可。 |
 | `xzy_yooasset_core/cli.py` | 命令行参数解析和主流程编排。 |
 | `xzy_yooasset_core/discovery.py` | 查找 YooAssets 根目录、package、`.bundle`、`__data`、`.rawfile`。 |
 | `xzy_yooasset_core/bundle.py` | bundle 头部探测、尾部 16 字节 XOR 解密、bundle 模式分类。 |
@@ -31,6 +37,15 @@ python -m pip install -r requirements.txt
 | `xzy_yooasset_core/constants.py` | CSV 字段、分类名、静态后缀列表。 |
 | `xzy_yooasset_core/progress.py` | 进度条和逐行进度输出。 |
 | `xzy_yooasset_core/utils.py` | 路径、CSV、字符串等小工具函数。 |
+| `tools/probe_packets.py` | 侦查和拆解 Packet/BattlePacket/Assembly 这类非 UnityFS raw 容器。 |
+| `tools/probe_table_bins.py` | 解析 Packet 里导出的表格 `.bin`，输出表格预览和可选 JSON。 |
+| `tools/extract_table_texts.py` | 从表格 JSON 里抽取可搜索的中文文案、活动 UI 文本和描述字段。 |
+| `tools/export_gameplay_tables.py` | 把已解析出的角色、战斗、技能、弹药、伤害、子弹、Buff、天赋等表，单独导出成 JSON 和 Excel 可直接打开的 CSV。 |
+| `tools/export_classified_tables.py` | 把剩余已命名表继续分成道具经济、活动任务、商城充值、匹配排位、系统全局、视觉引用等目录。 |
+| `tools/probe_binary_bins.py` | 对剩余非表格 `.bin` 做轻量级指纹分类。 |
+| `tools/probe_string_bins.py` | 实验性字符串列表探测器，用于继续侦查特殊二进制字符串。 |
+| `docs/project-history.md` | 项目历史、关键决策、踩坑记录和不要丢失的约束。 |
+| `docs/project-status-and-roadmap.md` | 给人看的项目现状、能力边界和后续开发路线。 |
 | `tests/` | 单元测试，只用合成 bundle，不需要真实游戏文件。 |
 
 ## Windows 最简单入口
@@ -48,7 +63,7 @@ run_wizard_windows.bat
 先列出本地 YooAssets 包，确认哪些包有热更 `BundleFiles`、哪些包有 StreamingAssets `.bundle`。
 
 ```bash
-python xzy_yooasset_extractor.py ^
+uv run python xzy_yooasset_extractor.py ^
   --game-root "E:\XZY\shengtianpc\10046\game" ^
   --list-packages
 ```
@@ -56,7 +71,7 @@ python xzy_yooasset_extractor.py ^
 如果你已经定位到了某一个 `yoo` 目录，也可以直接用 `--yoo-root`：
 
 ```bash
-python xzy_yooasset_extractor.py ^
+uv run python xzy_yooasset_extractor.py ^
   --yoo-root "E:\XZY\shengtianpc\10046\game\XzyLauncher_Data\yoo" ^
   --list-packages
 ```
@@ -68,7 +83,7 @@ python xzy_yooasset_extractor.py ^
 不加 `--execute` 时只做 dry-run，不会写入导出文件。适合先确认脚本能跑通。
 
 ```bash
-python xzy_yooasset_extractor.py ^
+uv run python xzy_yooasset_extractor.py ^
   --game-root "E:\XZY\shengtianpc\10046\game" ^
   --packages Icon ^
   --limit 2
@@ -81,7 +96,7 @@ python xzy_yooasset_extractor.py ^
 不传 `--packages` 就会扫描所有包；`--limit 0` 表示不限制 bundle 数量。默认 `--source-layout all`，也就是热更目录和 StreamingAssets 目录都扫。
 
 ```bash
-python xzy_yooasset_extractor.py ^
+uv run python xzy_yooasset_extractor.py ^
   --game-root "E:\XZY\shengtianpc\10046\game" ^
   --out "E:\XZY\AllAssets" ^
   --limit 0 ^
@@ -109,7 +124,7 @@ python xzy_yooasset_extractor.py ^
 如果只想知道每个 bundle 的识别模式，不想导出图片、音频、模型，可以加 `--no-export`。
 
 ```bash
-python xzy_yooasset_extractor.py ^
+uv run python xzy_yooasset_extractor.py ^
   --game-root "E:\XZY\shengtianpc\10046\game" ^
   --out "E:\XZY\BundleIndex" ^
   --limit 0 ^
@@ -124,7 +139,7 @@ python xzy_yooasset_extractor.py ^
 你也可以只盘点某一个来源：
 
 ```bash
-python xzy_yooasset_extractor.py ^
+uv run python xzy_yooasset_extractor.py ^
   --game-root "E:\XZY\shengtianpc\10046\game" ^
   --source-layout streaming ^
   --out "E:\XZY\BundleIndexStreaming" ^
@@ -139,7 +154,7 @@ python xzy_yooasset_extractor.py ^
 ## 只导出 UI 图片
 
 ```bash
-python xzy_yooasset_extractor.py ^
+uv run python xzy_yooasset_extractor.py ^
   --game-root "E:\XZY\shengtianpc\10046\game" ^
   --packages Icon,Main,Spine ^
   --categories ui ^
@@ -162,7 +177,7 @@ python xzy_yooasset_extractor.py ^
 ## 只导出 BGM
 
 ```bash
-python xzy_yooasset_extractor.py ^
+uv run python xzy_yooasset_extractor.py ^
   --game-root "E:\XZY\shengtianpc\10046\game" ^
   --packages Bgm ^
   --categories bgm ^
@@ -179,7 +194,7 @@ python xzy_yooasset_extractor.py ^
 ## 只导出音效和语音
 
 ```bash
-python xzy_yooasset_extractor.py ^
+uv run python xzy_yooasset_extractor.py ^
   --game-root "E:\XZY\shengtianpc\10046\game" ^
   --packages Se,Voice ^
   --categories audio ^
@@ -196,7 +211,7 @@ python xzy_yooasset_extractor.py ^
 ## 只导出模型相关资源
 
 ```bash
-python xzy_yooasset_extractor.py ^
+uv run python xzy_yooasset_extractor.py ^
   --game-root "E:\XZY\shengtianpc\10046\game" ^
   --packages CharacterMesh,Art3D ^
   --categories models,materials,textures ^
@@ -217,7 +232,7 @@ python xzy_yooasset_extractor.py ^
 ## 只导出特效相关资源
 
 ```bash
-python xzy_yooasset_extractor.py ^
+uv run python xzy_yooasset_extractor.py ^
   --game-root "E:\XZY\shengtianpc\10046\game" ^
   --packages BattlePacket,AnimationPacket,CharacterPerformance ^
   --categories effects,animation,materials,textures,prefabs,raw ^
@@ -240,7 +255,7 @@ python xzy_yooasset_extractor.py ^
 ## 只导出动画相关资源
 
 ```bash
-python xzy_yooasset_extractor.py ^
+uv run python xzy_yooasset_extractor.py ^
   --game-root "E:\XZY\shengtianpc\10046\game" ^
   --packages Spine,AnimationPacket,CharacterTimeline,CharacterController,CharacterPerformance ^
   --categories animation ^
@@ -256,7 +271,7 @@ python xzy_yooasset_extractor.py ^
 ## 只解密和分类，不用 UnityPy 导对象
 
 ```bash
-python xzy_yooasset_extractor.py ^
+uv run python xzy_yooasset_extractor.py ^
   --game-root "E:\XZY\shengtianpc\10046\game" ^
   --packages Icon ^
   --no-export ^
@@ -268,7 +283,7 @@ python xzy_yooasset_extractor.py ^
 ## 保存解密后的 UnityFS bundle
 
 ```bash
-python xzy_yooasset_extractor.py ^
+uv run python xzy_yooasset_extractor.py ^
   --game-root "E:\XZY\shengtianpc\10046\game" ^
   --packages Icon ^
   --keep-bundles ^
@@ -278,13 +293,238 @@ python xzy_yooasset_extractor.py ^
 全量保存解密后的 bundle 也可以，但会占用更多磁盘：
 
 ```bash
-python xzy_yooasset_extractor.py ^
+uv run python xzy_yooasset_extractor.py ^
   --game-root "E:\XZY\shengtianpc\10046\game" ^
   --out "E:\XZY\AllBundles" ^
   --limit 0 ^
   --keep-bundles ^
   --execute
 ```
+
+## Packet/bin 容器解包
+
+`Assembly`、`BattlePacket`、`Packet`、`AnimationPacket` 这类包里有一些内容不是 UnityFS bundle。主脚本会先把它们归类为 `non_unity_raw`，然后可以用 `tools/probe_packets.py` 继续拆内部条目。
+
+第一步，先把 Packet 类 raw 容器完整导出到一个单独目录：
+
+```bash
+uv run python xzy_yooasset_extractor.py ^
+  --game-root "E:\XZY\shengtianpc\10046\game" ^
+  --packages Assembly,BattlePacket,Packet,AnimationPacket ^
+  --categories raw ^
+  --no-export ^
+  --copy-rawfiles ^
+  --out "E:\XZYTool\bin_probe\raw_packet_full" ^
+  --limit 0 ^
+  --execute ^
+  --workers 1 ^
+  --progress-style lines ^
+  --progress-every 20
+```
+
+第二步，用 packet 探测工具解析容器并导出内部条目：
+
+```bash
+uv run python tools\probe_packets.py ^
+  --input "E:\XZYTool\bin_probe\raw_packet_full" ^
+  --out "E:\XZYTool\bin_probe\packet_extract_full_decoded" ^
+  --game-root "E:\XZY\shengtianpc\10046\game" ^
+  --extract ^
+  --key-text "这里填 GameConfig._EncryptKey 的 32 字符字符串" ^
+  --sample-entries 3
+```
+
+`--key-text` 不是 base64 解码后的值，而是 `_GameConfig._EncryptKey` 里那段 32 个字符本身。不要把真实 key、真实游戏资源或导出内容提交到 GitHub。
+
+如果使用 `tools/run_full_pipeline.py` 或 `run_all_windows.bat`，可以不传 `--key-text` / `--key-hex`。完整流水线会从 `XzyLauncher_Data/resources.assets` 的 `_GameConfig` 附近自动读取 `_EncryptKey`，传给 `probe_packets.py`，并在 `pipeline_summary.json` 里记录 `packet_key_source`。单独运行 `tools/probe_packets.py` 时仍然需要手动传 key。
+
+输出内容：
+
+| 文件 | 作用 |
+| --- | --- |
+| `summary.json` | 本次 packet 扫描总数、有效容器数、加密容器数、条目数。 |
+| `packets.csv` | 每个外层 packet/bin/rawfile 容器的解析结果。 |
+| `packet_entries.csv` | 每个内部条目的长度、解密状态、输出路径。 |
+| `previews/` | 每个容器的少量条目预览，便于快速判断格式。 |
+| `extracted/` | 真正导出的内部内容，常见后缀是 `.json`、`.dll`、`.cpmv`、`.bin`。 |
+
+我在当前样本上验证过的结果是：347 个 packet 容器全部可解析，65 个带加密标记，合计 19824 个内部条目；不启用 `--strict-decode` 时输出为 18852 个 `.json`、906 个 `.bin`、44 个 `.cpmv`、22 个 `.dll`，没有剩余 `.encrypted`。
+
+`--strict-decode` 只建议用于算法验证。它会把“已经 AES 解密成功但暂时无法识别格式”的低评分二进制保守地留下为 `.encrypted`。如果目标是全量拆出内容，通常不要加 `--strict-decode`，让这些内容落为 `.bin`，后续再继续研究二级格式。
+
+第三步，继续解析 `Packet/GameTables.p` 和 `Packet/UiTables.p` 里的表格 `.bin`：
+
+```bash
+uv run python tools\probe_table_bins.py ^
+  --input "E:\XZYTool\bin_probe\packet_extract_full_decoded\extracted" ^
+  --out "E:\XZYTool\bin_probe\table_bin_probe_named" ^
+  --sample-rows 3 ^
+  --export-json ^
+  --dump-cs "C:\Users\desal\Downloads\Il2CppDumper-win-v6.7.46\dump.cs" ^
+  --game-root "E:\XZY\shengtianpc\10046\game"
+```
+
+这个工具解决的是“`.bin` 里面还有一层表格格式”的问题。它会读取行数、列数、列类型，然后按列把数据还原成 JSON。
+
+输出内容：
+
+| 文件 | 作用 |
+| --- | --- |
+| `summary.json` | 统计扫描了多少 `.bin`、多少能解析成表、多少不是表、多少匹配到 `dump.cs` 字段结构。 |
+| `table_bins.csv` | 每个 `.bin` 的包逻辑名、表名候选、匹配状态、字段名和错误信息。 |
+| `previews/` | 每张表的元信息和前几行样本。 |
+| `tables_json/` | 加了 `--export-json` 后写出的完整表数据。 |
+
+`--dump-cs` 用来读取 Il2CppDumper 生成的 `Table*.tData` / `UiTable*.tData` 结构体。工具会用结构体字段顺序把 `col_00_uint` 这类机械列名还原成 `Id`、`Name`、`Config` 等字段名。
+
+`--game-root` 会自动读取本地 Packet manifest，把 hash 目录识别为 `GameTables`、`UiTables`、`Languages`、`Tutorial` 等逻辑包名。如果不想传游戏目录，也可以用 `--packet-manifest` 手动传 `.bytes` manifest；热更和 StreamingAssets 各传一次即可。
+
+`table_bins.csv` 里的 `match_status` 需要这样看：
+
+| 状态 | 含义 |
+| --- | --- |
+| `unique_signature` | 列类型签名只匹配到一个 `tData`，字段名可信度最高。 |
+| `package_preferred` | 多个 `tData` 类型一样，但根据 `GameTables` / `UiTables` 包名能选出一个，字段名会应用。 |
+| `ambiguous_signature` | 多个结构体字段类型完全一样，不能安全确定表名，只列出候选。 |
+| `package_ambiguous` | 包名能缩小候选范围，但仍然不唯一。 |
+| `no_match` | `.bin` 能解析成表，但当前 `dump.cs` 没有找到同样的字段类型签名。 |
+| `not_checked` | 没有传 `--dump-cs`，所以没有做字段名恢复。 |
+
+我在当前样本上验证过的表格结果是：906 个 `.bin` 中有 476 个是表格；其中 300 个唯一匹配字段结构，12 个靠包名偏好匹配，129 个保持签名歧义，6 个是包名缩小范围后仍不唯一，29 个没有在当前 `dump.cs` 里找到对应签名。保守留下歧义是故意的，避免把同字段结构的不同业务表误命名。
+
+第三步之后，如果你关心游戏文本、活动 UI 文案、活动任务描述、道具名和表字段，不要直接在几百个 JSON 里人工翻。先把 `tables_json/` 生成一个可搜索文本索引。
+
+只提取活动/UI 相关文案：
+
+```bash
+uv run python tools\extract_table_texts.py ^
+  --table-probe "E:\XZYTool\bin_probe\table_bin_probe_named" ^
+  --out "E:\XZYTool\table_texts_activity" ^
+  --table-regex "UiTableActivity|UiTableJumpAdBanner|UiTableGlobal" ^
+  --field-regex "Comment|Description|Title|Name|Text|StringValue|Choice" ^
+  --export-json
+```
+
+全量提取所有包含中文的表格字符串：
+
+```bash
+uv run python tools\extract_table_texts.py ^
+  --table-probe "E:\XZYTool\bin_probe\table_bin_probe_named" ^
+  --out "E:\XZYTool\table_texts_all" ^
+  --only-cjk
+```
+
+输出文件：
+
+| 文件 | 作用 |
+| --- | --- |
+| `table_texts.csv` | 可搜索 CSV，使用 UTF-8 with BOM，适合 Excel、VS Code、WPS 打开。 |
+| `table_texts.json` | 加 `--export-json` 时额外输出，适合后续脚本继续处理。 |
+| `summary.json` | 按表名和文本类型统计本次抽取结果。 |
+
+常用参数：
+
+| 参数 | 含义 |
+| --- | --- |
+| `--table-regex` | 按表名、packet 资源名、资源路径或 `.bin` 相对路径过滤。 |
+| `--field-regex` | 按字段名过滤，例如只看 `Comment|Description|Title|Name`。 |
+| `--keyword` | 只保留包含某个关键词的文本，可以重复传多次。 |
+| `--only-cjk` | 只保留包含中文/中日韩字符的字符串。 |
+| `--all-strings` | 导出所有非空字符串；默认仍会跳过日期，除非加 `--include-dates`。 |
+| `--max-records` | 快速测试时限制输出行数；`0` 表示不限制。 |
+
+我在当前样本上实测过两份索引：活动/UI 过滤版输出 3542 条文本，覆盖 48 张表；全量中文索引输出 81069 条文本，覆盖 273 张表。这里面能看到 `UiTableActivityMission`、`UiTableActivityChatEvent`、`UiTableJumpAdBanner`、`UiTableItem`、`UiTableRoleArchives` 等内容。
+
+如果你在 PowerShell 里看到中文乱码，不要立刻判断为解码失败。当前表格字符串是按 UTF-8 读出的，乱码通常是终端代码页显示问题。优先用 Excel、VS Code 或 Python 以 UTF-8 打开 `table_texts.csv` / `table_texts.json` 验证。
+
+### 战斗、角色、技能配置导出
+
+`probe_table_bins.py` 产出的 `tables_json/` 是完整表集合，但目录按 Packet 原始 hash 排列，不适合直接找“伤害表”“弹药表”“角色参数表”。如果你关心战斗数值、机体基础配置、技能冷却、子弹、Buff、天赋、核心、配件等配置，用下面这个二次导出器：
+
+```bash
+uv run python tools\export_gameplay_tables.py ^
+  --table-probe "E:\XZYTool\bin_probe\table_bin_probe_named" ^
+  --out "E:\XZYTool\gameplay_tables" ^
+  --include-ui-skill
+```
+
+它会输出 JSON 和 CSV 两套文件：
+
+| 路径 | 内容 |
+| --- | --- |
+| `gameplay_tables/tables.csv` | 本次导出的表清单、分类、源 Packet 路径、行数和输出文件路径。 |
+| `gameplay_tables/skills/cooldown/csv/TableAmmoIndex.csv` | 弹药数量、冷却、回复时间、初始数量、是否 EX 补充等。 |
+| `gameplay_tables/skills/damage/csv/TableDamageIndex.csv` | 伤害倍率、EX 获取、硬直、倒地、减伤、符文/成就钩子等。 |
+| `gameplay_tables/skills/bullet/csv/TableBulletIndex.csv` | 子弹模型、表现名、AnimatorController、预创建数量等。 |
+| `gameplay_tables/skills/buff/csv/TableBuffIndex.csv` | Buff 类型、叠加方式、持续时间、数值参数、字符串参数、特效和移除条件。 |
+| `gameplay_tables/skills/talent/csv/TableTalentIndex.csv` | 天赋 ID、类型、数值参数和字符串参数。 |
+| `gameplay_tables/characters/stats/csv/TableCharacterParameter.csv` | HP、Power、Boost、锁定距离、移动倍率、受击清除时间等角色基础参数。 |
+| `gameplay_tables/characters/base/csv/TableCharacterIndex.csv` | 角色配置名、模型、Performance、Icon、是否 BuildAsset。 |
+
+CSV 使用 UTF-8 with BOM，Excel / WPS / VS Code 可以直接打开。数组字段会以一小段 JSON 字符串放在单元格里，这样能保持“原始表一行 = CSV 一行”。这一步目前不强依赖 `.xlsx` 写库；如果需要带样式的 xlsx，可以后续从这些 CSV 再生成工作簿。
+
+一键完整流水线和 `run_all_windows.bat` 已经会自动生成 `gameplay_tables/`，手动命令主要用于你已经有 `table_bin_probe_named/`，不想重新拆包时单独补导出。
+
+### 其他有价值表的分类导出
+
+`gameplay_tables/` 只放战斗和角色玩法表。剩余已命名表里仍然有很多有价值配置，例如道具、活动任务、商城、充值、匹配、排位、全局参数、Spine/视觉引用、地区语言等。可以继续导出到 `classified_tables/`：
+
+```bash
+uv run python tools\export_classified_tables.py ^
+  --table-probe "E:\XZYTool\bin_probe\table_bin_probe_named" ^
+  --table-texts "E:\XZYTool\table_texts_all" ^
+  --out "E:\XZYTool\classified_tables"
+```
+
+如果你需要 `.xlsx` 浏览工作簿，直接加：
+
+```bash
+--xlsx
+```
+
+`openpyxl` 已经在 `pyproject.toml` 里，由 `uv sync` 安装到项目 `.venv`。
+
+主要分类包括：`items_economy`、`activity_mission`、`shop_monetization`、`match_rank_battle_ui`、`navigation_tutorial`、`system_global`、`visual_refs`、`equipment_loadout`、`social_communication`、`settings_region`、`review`。
+
+第四步，继续侦查剩下那些“不是表格”的 `.bin`：
+
+```bash
+uv run python tools\probe_binary_bins.py ^
+  --input "E:\XZYTool\bin_probe\packet_extract_full_decoded\extracted" ^
+  --out "E:\XZYTool\bin_probe\binary_probe_named" ^
+  --table-report "E:\XZYTool\bin_probe\table_bin_probe_named\table_bins.csv" ^
+  --game-root "E:\XZY\shengtianpc\10046\game"
+```
+
+这个工具不负责把 `.bin` 强行还原成 Unity 资源，它负责回答“剩下的二进制更像什么”。输出内容：
+
+| 文件 | 作用 |
+| --- | --- |
+| `summary.json` | 统计每种二进制分类各有多少。 |
+| `binary_bins.csv` | 每个非表格 `.bin` 的路径、大小、分类、头部字节、可读字符串和 manifest 线索。 |
+| `previews/` | 每个文件的少量预览 JSON，适合人工抽查。 |
+
+当前分类含义：
+
+| 分类 | 含义 |
+| --- | --- |
+| `animation_like` | `AnimationPacket` 里带有 `skill_`、`shoot_`、`combat_loop` 等动画字符串的二进制。 |
+| `animation_state_skeleton` | `AnimationPacket` 里没有字符串，但有计数字段、低熵小记录、`S1`/`S2`/`EX` 等动作 ID，或者全零占位。它更像动画状态骨架，不是漏导出的图片、音频或模型。 |
+| `unity_yaml_meta` | Unity 文本 YAML 元信息。 |
+| `collision_like` | 带碰撞体、边界、trigger 等字符串的二进制。 |
+| `string_list` | 可以按字符串列表格式完整读出的文件。 |
+| `binary_with_strings` | 不是表格，但能抽出一些可读字符串。 |
+| `tiny_placeholder` | 很小的占位文件。 |
+| `binary_unknown` | 目前仍没有足够证据分类，需要继续人工分析。 |
+
+我在当前样本上复查过：表格解析后的 430 个非表格 `.bin` 中，264 个是 `animation_like`，19 个是 `animation_state_skeleton`，88 个是 `unity_yaml_meta`，38 个是 `collision_like`，9 个是 `tiny_placeholder`，8 个是 `binary_with_strings`，4 个是 `string_list`，没有剩余 `binary_unknown`。这说明现阶段剩下的 `.bin` 已经能按用途解释，不能再简单理解成“还有大量美术资源没导出”。
+
+当前工具已经能从 YooAsset `RawFileBuildPipeline` manifest 里解析 hash 到逻辑名的映射。例如：
+
+- `Assets/GameData/BattlePackets/GameBehavior18.p` 会推导 IV 名 `GameBehavior.p`。
+- `Assets/GameData/Packets/UiTables.p` 会推导 IV 名 `UiTables.p`。
+
+IV 规则是：把逻辑名按 UTF-8 转字节，截断或补零到 16 字节。AES key 来自 `_GameConfig._EncryptKey`，模式是 AES-CBC。
 
 ## 输出文件
 
@@ -363,7 +603,7 @@ assets/raw/streaming_assets/AnimationPacket/*.rawfile
 
 ## Windows 批处理示例
 
-推荐先用项目根目录的 `run_wizard_windows.bat`，它可以弹窗选择游戏目录和输出目录。
+推荐先用项目根目录的 `run_wizard_windows.bat`，它可以弹窗选择游戏目录和输出目录。模式 1-7 只做导出，模式 8 才会跑完整流水线，模式 9 会复用已有 `raw/` 继续后续阶段。
 
 `examples/` 目录里还有几份可以双击运行的 `.bat` 示例。它们会自动回到项目根目录再运行，所以能找到外层的 `xzy_yooasset_extractor.py`。运行前先打开文件，把 `GAME_ROOT`、`OUT_DIR` 和可选的 `WORKERS` 改成你自己的设置。
 
@@ -393,11 +633,10 @@ assets/raw/streaming_assets/AnimationPacket/*.rawfile
 | `--no-export` | 只识别和解密 bundle，不让 UnityPy 导出内部对象。 |
 | `--copy-rawfiles` | 复制本地 `.rawfile` payload 到 `assets/raw/<layout>/<package>/...`，并写入 `assets.csv`。它不会把 `.rawfile` 当 UnityFS bundle 解析。 |
 | `--keep-bundles` | 保存解密后的 UnityFS bundle。 |
-| `--deps-dir C:\path\to\site-packages` | 指定 UnityPy 等依赖所在目录。 |
 | `--workers 4` | 使用 4 个工作进程并行处理 bundle。默认 `1` 是串行模式。全量导出建议先试 `4`。 |
 | `--progress-every 1` | 每处理 1 个 bundle 刷新一次进度，最直观。 |
 | `--progress-every 0` | 关闭进度输出。 |
-| `--progress-style bar` | 显示可视化进度条，默认值。 |
+| `--progress-style bar` | 显示可视化进度条，默认值。安装了 Rich 时会使用更漂亮的样式，否则回退到纯文本。 |
 | `--progress-style lines` | 每次刷新输出一行日志，适合保存日志。 |
 | `--no-manifest-check` | 跳过本地 manifest/catalog 静态引用检查。 |
 | `--list-packages` | 只列出包信息，然后退出。 |
@@ -455,13 +694,13 @@ BundleFiles/**/__data
 测试不需要真实游戏文件：
 
 ```bash
-python -m unittest discover -s tests
+uv run python -m unittest discover -s tests
 ```
 
 语法检查：
 
 ```bash
-python -m py_compile xzy_yooasset_extractor.py
+uv run python -m py_compile xzy_yooasset_extractor.py
 ```
 
 ## 开源和版权边界
@@ -469,3 +708,7 @@ python -m py_compile xzy_yooasset_extractor.py
 本仓库使用 MIT License。MIT 只覆盖本仓库里的提取脚本、测试和文档，不覆盖任何第三方游戏资源。
 
 请不要上传、发布或公开展示没有授权的图片、音频、模型、bundle、metadata 或其他可能受版权保护的内容。
+## Windows 一键入口
+
+- `run_all_windows.bat`：一键完整流水线，导出、Packet 侦查、表文本抽取、战斗配置导出、残余二进制探测、字符串探测和整理。
+- `run_wizard_windows.bat`：分项导出和排障入口。

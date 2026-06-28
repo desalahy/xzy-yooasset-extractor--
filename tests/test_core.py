@@ -16,6 +16,66 @@ import xzy_yooasset_extractor as extractor
 TEST_TMP_BASE = Path(os.environ.get("XZY_EXTRACTOR_TEST_TMP", r"E:\XZYTool\_extractor_test_tmp"))
 
 
+def manifest_string(value: str) -> bytes:
+    data = value.encode("utf-8")
+    return len(data).to_bytes(2, "little") + data
+
+
+def build_rawfile_manifest(asset_rows: list[tuple[str, str, str, str, int]]) -> bytes:
+    blob = bytearray(b"OOY\x00")
+    blob.extend(manifest_string("2.3.1"))
+    blob.extend(b"\x01\x00\x00\x00\x00\x00\x00\x03\x00\x00\x00")
+    blob.extend(manifest_string("RawFileBuildPipeline"))
+    blob.extend(manifest_string("BattlePacket"))
+    blob.extend(manifest_string("3.1.0.485"))
+    blob.extend(manifest_string("2026/6/24 18:34:28"))
+    blob.extend(len(asset_rows).to_bytes(4, "little", signed=True))
+    for index, (asset_name, asset_path, _bundle_name, _bundle_hash, _bundle_size) in enumerate(asset_rows):
+        blob.extend(manifest_string(asset_name))
+        blob.extend(manifest_string(asset_path))
+        blob.extend(b"\x00\x00\x00\x00")
+        blob.extend(index.to_bytes(4, "little", signed=True))
+        blob.extend(b"\x00\x00")
+    blob.extend(len(asset_rows).to_bytes(4, "little", signed=True))
+    for _asset_name, _asset_path, bundle_name, bundle_hash, bundle_size in asset_rows:
+        blob.extend(manifest_string(bundle_name))
+        blob.extend(b"\x00\x00\x00\x00")
+        blob.extend(manifest_string(bundle_hash))
+        blob.extend(manifest_string("checksum"))
+        blob.extend(bundle_size.to_bytes(8, "little"))
+        blob.extend(b"\x00\x00\x00\x00\x00")
+    return bytes(blob)
+
+
+def build_builtin_rawfile_manifest(asset_rows: list[tuple[str, str, str, str, int]]) -> bytes:
+    blob = bytearray(b"OOY\x00")
+    blob.extend(manifest_string("2.3.1"))
+    blob.extend(b"\x01\x00\x00\x00\x00\x00\x00\x03\x00\x00\x00")
+    blob.extend(manifest_string("RawFileBuildPipeline"))
+    blob.extend(manifest_string("Packet"))
+    blob.extend(manifest_string("3.1.0.465"))
+    blob.extend(manifest_string("2026/6/5 16:01:31"))
+    blob.extend(len(asset_rows).to_bytes(4, "little", signed=True))
+    for index, (asset_name, asset_path, _bundle_name, _bundle_hash, _bundle_size) in enumerate(asset_rows):
+        blob.extend(manifest_string(asset_name))
+        blob.extend(manifest_string(asset_path))
+        blob.extend(b"\x00\x00\x01\x00")
+        blob.extend(manifest_string("Builtin"))
+        blob.extend(index.to_bytes(4, "little", signed=True))
+        blob.extend(b"\x00\x00")
+    blob.extend(len(asset_rows).to_bytes(4, "little", signed=True))
+    for _asset_name, _asset_path, bundle_name, bundle_hash, bundle_size in asset_rows:
+        blob.extend(manifest_string(bundle_name))
+        blob.extend(b"\x00\x00\x00\x00")
+        blob.extend(manifest_string(bundle_hash))
+        blob.extend(manifest_string("checksum"))
+        blob.extend(bundle_size.to_bytes(8, "little"))
+        blob.extend(b"\x00\x01\x00")
+        blob.extend(manifest_string("Builtin"))
+        blob.extend(b"\x00\x00")
+    return bytes(blob)
+
+
 @contextmanager
 def temp_workspace():
     TEST_TMP_BASE.mkdir(parents=True, exist_ok=True)
@@ -92,6 +152,21 @@ class CoreExtractorTests(unittest.TestCase):
             self.assertEqual(bundle.mode, "tail16_xor_unityfs")
             self.assertIsNone(bundle.unity_bytes)
             self.assertTrue(bundle.decoded_head.startswith(b"UnityFS"))
+
+    def test_classify_non_unity_keeps_original_raw_bytes(self) -> None:
+        with temp_workspace() as tmp:
+            package_root = Path(tmp) / "BattlePacket"
+            data_path = package_root / "BundleFiles" / "00" / "hash_packet" / "__data"
+            data_path.parent.mkdir(parents=True)
+
+            packet_like = b"\x01\x21\x03\x00\x00packet-index" + b"x" * 16
+            data_path.write_bytes(packet_like)
+
+            bundle = extractor.classify_bundle(data_path, package_root)
+
+            self.assertEqual(bundle.mode, "non_unity_raw")
+            self.assertEqual(bundle.unity_bytes, packet_like)
+            self.assertFalse(bundle.decoded_head.startswith(b"UnityFS"))
 
     def test_resolve_yoo_roots_finds_hot_and_streaming_sources(self) -> None:
         with temp_workspace() as tmp:
@@ -185,6 +260,129 @@ class CoreExtractorTests(unittest.TestCase):
             self.assertEqual(row["category"], "raw")
             self.assertEqual(row["bundle_mode"], "rawfile")
 
+    def test_raw_bundle_row_uses_raw_category(self) -> None:
+        with temp_workspace() as tmp:
+            out_root = Path(tmp) / "out"
+            source = Path(tmp) / "yoo" / "BattlePacket" / "BundleFiles" / "00" / "hash_packet" / "__data"
+            target = out_root / "raw" / "hot_update" / "BattlePacket" / "hash_packet.bin"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"\x01\x21\x03\x00\x00packet")
+            bundle = extractor.BundleInput(
+                "hot_update",
+                "BattlePacket",
+                "hash_packet",
+                source,
+                "non_unity_raw",
+                source.read_bytes(),
+                b"\x01\x21\x03\x00\x00",
+                b"",
+            )
+
+            row = extractor.raw_bundle_row(bundle, target, "exported_raw_bundle", out_root, None)
+
+            self.assertEqual(row["type"], "RawBundle")
+            self.assertEqual(row["category"], "raw")
+            self.assertEqual(row["bundle_mode"], "non_unity_raw")
+            self.assertEqual(row["output"], "raw\\hot_update\\BattlePacket\\hash_packet.bin")
+
+    def test_gameobject_prefab_export_routes_to_prefabs_json(self) -> None:
+        with temp_workspace() as tmp:
+            out_root = Path(tmp) / "out"
+            bundle = extractor.BundleInput(
+                "hot_update",
+                "BattleScene",
+                "hash_scene",
+                Path(tmp) / "yoo" / "BattleScene" / "BundleFiles" / "00" / "hash_scene" / "__data",
+                "plain_unityfs",
+                None,
+                b"UnityFS\x00",
+                b"UnityFS\x00",
+            )
+            options = extractor.ExportOptions(
+                out_root=out_root,
+                execute=True,
+                keep_bundles=False,
+                no_export=False,
+                categories=None,
+                types=None,
+                ui_packages={"icon", "background", "main", "spine"},
+                model_packages={"charactermesh", "art3d"},
+                effects_packages={"battlepacket"},
+                animation_packages={"spine"},
+            )
+            ctx = extractor.ExportContext(options=options, used_outputs=set(), manifest_index=None)
+
+            class DummyGameObject:
+                type = type("T", (), {"name": "GameObject"})()
+                path_id = 42
+
+                def read(self):
+                    return self
+
+                def parse_as_object(self):
+                    return self
+
+                def parse_as_dict(self):
+                    return {"m_Name": "HeroRoot", "m_IsActive": True, "m_Component": []}
+
+            rows = extractor.export_object(DummyGameObject(), bundle, ctx)
+
+            self.assertEqual(rows[0]["category"], "prefabs")
+            self.assertEqual(rows[0]["status"], "exported_prefab_json")
+            self.assertTrue((out_root / "assets" / "prefabs" / "hot_update" / "BattleScene" / "hash_scene" / "HeroRoot__GameObject_42.json").exists())
+
+    def test_prefab_graph_is_written_per_bundle(self) -> None:
+        with temp_workspace() as tmp:
+            out_root = Path(tmp) / "out"
+            bundle = extractor.BundleInput(
+                "hot_update",
+                "BattleScene",
+                "hash_scene",
+                Path(tmp) / "yoo" / "BattleScene" / "BundleFiles" / "00" / "hash_scene" / "__data",
+                "plain_unityfs",
+                None,
+                b"UnityFS\x00",
+                b"UnityFS\x00",
+            )
+            options = extractor.ExportOptions(
+                out_root=out_root,
+                execute=True,
+                keep_bundles=False,
+                no_export=False,
+                categories=None,
+                types=None,
+                ui_packages={"icon", "background", "main", "spine"},
+                model_packages={"charactermesh", "art3d"},
+                effects_packages={"battlepacket"},
+                animation_packages={"spine"},
+            )
+            ctx = extractor.ExportContext(options=options, used_outputs=set(), manifest_index=None)
+
+            class DummyTransform:
+                type = type("T", (), {"name": "Transform"})()
+                path_id = 7
+
+                def read(self):
+                    return self
+
+                def parse_as_object(self):
+                    return self
+
+                def parse_as_dict(self):
+                    return {"m_Name": "HeroRoot", "m_Children": []}
+
+            extractor.export_object(DummyTransform(), bundle, ctx)
+            rows = extractor.write_prefab_graph(ctx, bundle)
+
+            graph_file = out_root / "assets" / "prefabs" / "hot_update" / "BattleScene" / "hash_scene" / "prefab_graph.json"
+            self.assertTrue(graph_file.exists())
+            self.assertEqual(rows[0]["type"], "PrefabGraph")
+            payload = json.loads(graph_file.read_text(encoding="utf-8"))
+            self.assertEqual(payload["bundle_hash"], "hash_scene")
+            self.assertEqual(payload["node_count"], 1)
+            self.assertEqual(payload["nodes"][0]["type"], "Transform")
+            self.assertEqual(payload["nodes"][0]["name"], "HeroRoot")
+
     def test_package_report_tracks_missing_bundle_files(self) -> None:
         with temp_workspace() as tmp:
             yoo_root = extractor.YooRoot(Path(tmp), "hot_update")
@@ -242,6 +440,25 @@ class CoreExtractorTests(unittest.TestCase):
         self.assertEqual(extractor.category_for_type("AudioClip", "opening_theme", "Bgm", options), "bgm")
         self.assertEqual(extractor.category_for_type("AudioClip", "click", "Se", options), "audio")
         self.assertEqual(extractor.category_for_type("ParticleSystem", "hit_spark", "BattlePacket", options), "effects")
+
+    def test_category_rules_route_prefab_tree_to_prefabs(self) -> None:
+        options = extractor.ExportOptions(
+            out_root=Path("out"),
+            execute=False,
+            keep_bundles=False,
+            no_export=False,
+            categories=None,
+            types=None,
+            ui_packages={"icon", "background", "main", "spine"},
+            model_packages={"charactermesh", "art3d"},
+            effects_packages={"battlepacket"},
+            animation_packages={"spine"},
+        )
+
+        self.assertEqual(extractor.category_for_type("GameObject", "HeroRoot", "BattleScene", options), "prefabs")
+        self.assertEqual(extractor.category_for_type("Transform", "HeroRoot", "BattleScene", options), "prefabs")
+        self.assertEqual(extractor.category_for_type("MonoBehaviour", "HeroRoot", "BattleScene", options), "prefabs")
+        self.assertEqual(extractor.category_for_type("CanvasRenderer", "HeroRoot", "BattleScene", options), "prefabs")
 
     def test_export_filter_status_checks_category_and_type(self) -> None:
         options = extractor.ExportOptions(
@@ -311,6 +528,67 @@ class CoreExtractorTests(unittest.TestCase):
 
             self.assertEqual(extractor.manifest_match_for_bundle(bundle_hash, index), ("referenced", bundle_hash))
             self.assertEqual(index.rows[0]["layout"], "streaming_assets")
+
+    def test_rawfile_manifest_maps_bundle_hash_to_asset_name(self) -> None:
+        with temp_workspace() as tmp:
+            yoo_root = Path(tmp) / "yoo"
+            manifest = yoo_root / "BattlePacket" / "ManifestFiles" / "BattlePacket.bytes"
+            manifest.parent.mkdir(parents=True)
+            bundle_hash = "115a22cd2380a915ade0fc239edaf3e0"
+            manifest.write_bytes(
+                build_rawfile_manifest(
+                    [
+                        (
+                            "GameBehavior18",
+                            "Assets/GameData/BattlePackets/GameBehavior18.p",
+                            "battlepacket_assets_gamedata_battlepackets_gamebehavior18_p.rawfile",
+                            bundle_hash,
+                            10470365,
+                        )
+                    ]
+                )
+            )
+
+            parsed = extractor.parse_rawfile_manifest(manifest.read_bytes())
+            self.assertIsNotNone(parsed)
+            self.assertEqual(parsed["bundles"][0]["asset_name"], "GameBehavior18")
+            self.assertEqual(parsed["bundles"][0]["bundle_hash"], bundle_hash)
+
+            index = extractor.build_manifest_index([extractor.YooRoot(yoo_root, "hot_update")], None)
+
+            self.assertEqual(index.hash_to_assets[bundle_hash][0]["asset_name"], "GameBehavior18")
+            self.assertEqual(index.hash_to_assets[bundle_hash][0]["asset_path"], "Assets/GameData/BattlePackets/GameBehavior18.p")
+
+    def test_builtin_rawfile_manifest_maps_packet_hash_to_asset_name(self) -> None:
+        with temp_workspace() as tmp:
+            yoo_root = Path(tmp) / "yoo"
+            manifest = yoo_root / "Packet" / "Packet_3.1.0.465.bytes"
+            manifest.parent.mkdir(parents=True)
+            bundle_hash = "957e8c52b0ee4a777f9a0de6f6580246"
+            manifest.write_bytes(
+                build_builtin_rawfile_manifest(
+                    [
+                        (
+                            "UiTables",
+                            "Assets/GameData/Packets/UiTables.p",
+                            "packet_assets_gamedata_packets_uitables_p.rawfile",
+                            bundle_hash,
+                            2787773,
+                        )
+                    ]
+                )
+            )
+
+            parsed = extractor.parse_rawfile_manifest(manifest.read_bytes())
+            self.assertIsNotNone(parsed)
+            self.assertEqual(parsed["asset_record_mode"], "builtin")
+            self.assertEqual(parsed["bundles"][0]["asset_name"], "UiTables")
+            self.assertEqual(parsed["bundles"][0]["asset_path"], "Assets/GameData/Packets/UiTables.p")
+
+            index = extractor.build_manifest_index([extractor.YooRoot(yoo_root, "streaming_assets")], None)
+
+            self.assertEqual(index.hash_to_assets[bundle_hash][0]["asset_name"], "UiTables")
+            self.assertEqual(index.hash_to_assets[bundle_hash][0]["asset_path"], "Assets/GameData/Packets/UiTables.p")
 
     def test_cli_workers_no_export_writes_stable_indexes(self) -> None:
         with temp_workspace() as tmp:

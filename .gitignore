@@ -1,6 +1,10 @@
 __pycache__/
 *.pyc
 .venv/
+.uv-cache/
+.test_tmp/
+.analysis_deps/
+.analysis_tmp/
 venv/
 env/
 xzy_assets_out/

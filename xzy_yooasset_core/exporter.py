@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
-import os
 import shutil
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -13,28 +11,18 @@ from .models import BundleInput, ExportContext, ExportOptions, ManifestIndex, Ra
 from .utils import safe_name
 
 
-def import_unitypy(deps_dir: str | None) -> Any:
-    env_deps = os.environ.get("UNITYPY_DEPS_DIR")
-    chosen_deps = deps_dir or env_deps
-    if chosen_deps:
-        deps_path = Path(chosen_deps).expanduser().resolve()
-        if not deps_path.exists():
-            raise RuntimeError(f"dependency directory does not exist: {deps_path}")
-        sys.path.insert(0, str(deps_path))
-
+def import_unitypy() -> Any:
     try:
         module = importlib.import_module("UnityPy")
     except ImportError as exc:
-        raise RuntimeError(
-            "UnityPy is not installed. Run: python -m pip install -r requirements.txt"
-        ) from exc
+        raise RuntimeError("UnityPy is not installed. Run: uv sync, then use uv run python ...") from exc
 
     has_loader = callable(getattr(module, "load", None)) or callable(getattr(module, "Environment", None))
     if not has_loader:
         raise RuntimeError(
             "Imported a UnityPy module without load/Environment. "
             f"module_file={getattr(module, '__file__', None)!r}. "
-            "Check PYTHONPATH, --deps-dir, or reinstall UnityPy."
+            "Check the active uv environment with: uv run python -c \"import UnityPy; print(UnityPy.__file__)\"."
         )
     return module
 
@@ -47,6 +35,27 @@ def load_unity_env(unitypy: Any, data: bytes) -> Any:
     if callable(env_cls):
         return env_cls(data)
     raise RuntimeError("UnityPy loader is unavailable")
+
+
+def _obj_type_name(obj: Any) -> str:
+    return getattr(getattr(obj, "type", None), "name", str(getattr(obj, "type", "Unknown")))
+
+
+def _obj_path_id(obj: Any) -> Any:
+    return getattr(obj, "path_id", getattr(obj, "m_PathID", ""))
+
+
+def _display_name(data: Any, type_name: str, path_id: Any) -> str:
+    if isinstance(data, dict):
+        for key in ("m_Name", "name", "m_AssetName", "m_OriginalName", "m_ScriptName"):
+            value = data.get(key, "")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    for attr in ("m_Name", "name", "m_AssetName", "m_OriginalName", "m_ScriptName"):
+        value = getattr(data, attr, "")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return f"{type_name}_{path_id}" if path_id != "" else type_name
 
 
 def category_for_type(type_name: str, asset_name: str, package: str, options: ExportOptions) -> str:
@@ -99,6 +108,232 @@ def export_filter_status(category: str, type_name: str, options: ExportOptions) 
     if options.types and type_name.lower() not in options.types:
         return "skipped_type"
     return ""
+
+
+def _safe_parse_object(obj: Any) -> Any:
+    parser = getattr(obj, "parse_as_object", None)
+    if callable(parser):
+        return parser()
+    reader = getattr(obj, "object_reader", None)
+    if reader is not None and callable(getattr(reader, "parse_as_object", None)):
+        return reader.parse_as_object()
+    return obj
+
+
+def _safe_parse_dict(obj: Any) -> dict[str, Any] | None:
+    parser = getattr(obj, "parse_as_dict", None)
+    if callable(parser):
+        try:
+            value = parser()
+            if isinstance(value, dict):
+                return value
+        except Exception:
+            return None
+    reader = getattr(obj, "object_reader", None)
+    if reader is not None and callable(getattr(reader, "parse_as_dict", None)):
+        try:
+            value = reader.parse_as_dict()
+            if isinstance(value, dict):
+                return value
+        except Exception:
+            return None
+    return None
+
+
+def _jsonable(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable(item) for item in value]
+    if hasattr(value, "__dict__") and not isinstance(value, type):
+        data: dict[str, Any] = {}
+        for key, item in vars(value).items():
+            if key.startswith("_"):
+                continue
+            data[key] = _jsonable(item)
+        if data:
+            return data
+    if hasattr(value, "path_id"):
+        return {"path_id": _obj_path_id(value)}
+    return str(value)
+
+
+def _component_ref(value: Any) -> dict[str, Any]:
+    if hasattr(value, "path_id") or hasattr(value, "m_PathID"):
+        return {
+            "path_id": str(_obj_path_id(value)),
+            "type": _obj_type_name(value),
+        }
+    return {"value": _jsonable(value)}
+
+
+def _append_prefab_node(ctx: ExportContext, bundle: BundleInput, type_name: str, asset_name: str, path_id: Any, payload: dict[str, Any]) -> None:
+    key = (bundle.layout, bundle.package, bundle.hash_name)
+    graph = ctx.prefab_graphs.setdefault(
+        key,
+        {
+            "layout": bundle.layout,
+            "package": bundle.package,
+            "bundle_hash": bundle.hash_name,
+            "bundle_mode": bundle.mode,
+            "source": str(bundle.source_path),
+            "nodes": [],
+        },
+    )
+    node = {
+        "type": type_name,
+        "name": asset_name,
+        "path_id": str(path_id),
+    }
+    node.update(payload)
+    graph["nodes"].append(node)
+
+
+def prefab_graph_output_path(ctx: ExportContext, bundle: BundleInput) -> Path:
+    target = ctx.options.out_root / "assets" / "prefabs" / bundle.layout / bundle.package / bundle.hash_name / "prefab_graph.json"
+    return reserve_output_path(ctx, target)
+
+
+def prefab_graph_row(
+    bundle: BundleInput,
+    target: Path | None,
+    status: str,
+    out_root: Path,
+    manifest_index: ManifestIndex | None = None,
+) -> dict[str, Any]:
+    output = ""
+    if target:
+        try:
+            output = str(target.relative_to(out_root))
+        except ValueError:
+            output = str(target)
+    manifest_reference, manifest_match = manifest_match_for_asset(bundle.hash_name, bundle.hash_name, manifest_index)
+    return {
+        "layout": bundle.layout,
+        "package": bundle.package,
+        "bundle_hash": bundle.hash_name,
+        "bundle_mode": bundle.mode,
+        "source": str(bundle.source_path),
+        "type": "PrefabGraph",
+        "path_id": "",
+        "asset_name": "prefab_graph.json",
+        "category": "prefabs",
+        "output": output,
+        "status": status,
+        "manifest_reference": manifest_reference,
+        "manifest_match": manifest_match,
+    }
+
+
+def write_prefab_graph(ctx: ExportContext, bundle: BundleInput) -> list[dict[str, Any]]:
+    key = (bundle.layout, bundle.package, bundle.hash_name)
+    graph = ctx.prefab_graphs.get(key)
+    if not graph:
+        return []
+
+    target = prefab_graph_output_path(ctx, bundle)
+    payload = {
+        "layout": graph["layout"],
+        "package": graph["package"],
+        "bundle_hash": graph["bundle_hash"],
+        "bundle_mode": graph["bundle_mode"],
+        "source": graph["source"],
+        "node_count": len(graph["nodes"]),
+        "nodes": graph["nodes"],
+        "roots": [node for node in graph["nodes"] if node["type"] == "GameObject"],
+    }
+    try:
+        export_json = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        write_bytes(target, export_json, ctx.options.execute)
+        row = prefab_graph_row(bundle, target, "exported_prefab_graph" if ctx.options.execute else "listed_prefab_graph", ctx.options.out_root, ctx.manifest_index)
+    except Exception as exc:
+        row = prefab_graph_row(bundle, None, f"prefab_graph_failed:{exc}", ctx.options.out_root, ctx.manifest_index)
+    return [row]
+
+
+def _prefab_export_rows(
+    obj: Any,
+    bundle: BundleInput,
+    category: str,
+    type_name: str,
+    asset_name: str,
+    out_root: Path,
+    ctx: ExportContext,
+) -> list[dict[str, Any]]:
+    instance = _safe_parse_object(obj)
+    dict_payload = _safe_parse_dict(obj)
+    display_name = asset_name
+    if dict_payload:
+        display_name = _display_name(dict_payload, type_name, _obj_path_id(obj))
+    target = object_output_path(ctx, bundle, category, type_name, display_name, _obj_path_id(obj), ".json")
+    payload: dict[str, Any] = {
+        "type": type_name,
+        "name": display_name,
+        "path_id": str(_obj_path_id(obj)),
+    }
+    if dict_payload:
+        for key in (
+            "m_Name",
+            "m_Layer",
+            "m_Tag",
+            "m_IsActive",
+            "m_Component",
+            "m_Components",
+            "m_Children",
+            "m_Father",
+            "m_Animator",
+            "m_Animation",
+            "m_Transform",
+            "m_MeshFilter",
+            "m_MeshRenderer",
+            "m_SkinnedMeshRenderer",
+            "m_Script",
+            "m_GameObject",
+        ):
+            value = dict_payload.get(key)
+            if value is not None:
+                if key in {"m_Component", "m_Components", "m_Children"} and isinstance(value, list):
+                    payload[key] = [_component_ref(item) for item in value]
+                elif key in {"m_Animator", "m_Animation", "m_Transform", "m_MeshFilter", "m_MeshRenderer", "m_SkinnedMeshRenderer", "m_Script", "m_GameObject", "m_Father"}:
+                    payload[key] = _component_ref(value) if value else None
+                else:
+                    payload[key] = _jsonable(value)
+
+    for attr in (
+        "m_Name",
+        "m_Component",
+        "m_Children",
+        "m_Father",
+        "m_Transform",
+        "m_Animator",
+        "m_Animation",
+        "m_MeshFilter",
+        "m_MeshRenderer",
+        "m_SkinnedMeshRenderer",
+        "m_Enabled",
+    ):
+        value = getattr(instance, attr, None)
+        if value is not None:
+            payload[attr] = _jsonable(value)
+
+    if hasattr(instance, "m_Children") and "m_Children" not in payload:
+        payload["m_Children"] = _jsonable(getattr(instance, "m_Children"))
+
+    _append_prefab_node(ctx, bundle, type_name, display_name, _obj_path_id(obj), payload)
+
+    try:
+        export_json = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        write_bytes(target, export_json, ctx.options.execute)
+        row = row_for(bundle, obj, type_name, asset_name, category, target, "exported_prefab_json", out_root, ctx.manifest_index)
+    except Exception as exc:
+        row = row_for(bundle, obj, type_name, asset_name, category, None, f"prefab_failed:{exc}", out_root, ctx.manifest_index)
+    return [row]
 
 
 def category_is_enabled(category: str, options: ExportOptions) -> bool:
@@ -214,6 +449,37 @@ def rawfile_row(raw_file: RawFileCandidate, target: Path | None, status: str, ou
     }
 
 
+def raw_bundle_row(
+    bundle: BundleInput,
+    target: Path | None,
+    status: str,
+    out_root: Path,
+    manifest_index: ManifestIndex | None,
+) -> dict[str, Any]:
+    output = ""
+    if target:
+        try:
+            output = str(target.relative_to(out_root))
+        except ValueError:
+            output = str(target)
+    manifest_reference, manifest_match = manifest_match_for_asset(bundle.hash_name, bundle.hash_name, manifest_index)
+    return {
+        "layout": bundle.layout,
+        "package": bundle.package,
+        "bundle_hash": bundle.hash_name,
+        "bundle_mode": bundle.mode,
+        "source": str(bundle.source_path),
+        "type": "RawBundle",
+        "path_id": "",
+        "asset_name": f"{bundle.hash_name}.bin",
+        "category": "raw",
+        "output": output,
+        "status": status,
+        "manifest_reference": manifest_reference,
+        "manifest_match": manifest_match,
+    }
+
+
 def normalize_raw(raw: Any) -> bytes | None:
     if raw is None:
         return None
@@ -233,9 +499,9 @@ def export_object(obj: Any, bundle: BundleInput, ctx: ExportContext) -> list[dic
     out_root = options.out_root
     try:
         data = obj.read()
-        type_name = obj.type.name
-        path_id = getattr(obj, "path_id", "")
-        asset_name = getattr(data, "name", "") or f"{type_name}_{path_id}"
+        type_name = _obj_type_name(obj)
+        path_id = _obj_path_id(obj)
+        asset_name = _display_name(data, type_name, path_id)
         category = category_for_type(type_name, asset_name, bundle.package, options)
         skip_status = export_filter_status(category, type_name, options)
         if skip_status:
@@ -277,6 +543,12 @@ def export_object(obj: Any, bundle: BundleInput, ctx: ExportContext) -> list[dic
                     rows.append(row_for(bundle, obj, type_name, asset_name, category, target, "exported_audio_sample", out_root, ctx.manifest_index))
             if rows:
                 return rows
+
+        if type_name == "GameObject":
+            return _prefab_export_rows(obj, bundle, category, type_name, asset_name, out_root, ctx)
+
+        if type_name in {"Transform", "RectTransform", "MonoBehaviour", "CanvasRenderer"}:
+            return _prefab_export_rows(obj, bundle, category, type_name, asset_name, out_root, ctx)
 
         raw = None
         try:

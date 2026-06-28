@@ -18,6 +18,8 @@ from xzy_yooasset_core.exporter import (
     export_object,
     import_unitypy,
     load_unity_env,
+    write_prefab_graph,
+    raw_bundle_row,
     rawfile_output_path,
     rawfile_row,
     reserve_output_path,
@@ -29,6 +31,7 @@ from xzy_yooasset_core.manifest import (
     iter_manifest_files,
     manifest_match_for_asset,
     manifest_match_for_bundle,
+    parse_rawfile_manifest,
 )
 from xzy_yooasset_core.models import BundleCandidate, BundleInput, ExportContext, ExportOptions, ManifestIndex, RawFileCandidate, YooRoot
 from xzy_yooasset_core.progress import ProgressReporter
@@ -89,6 +92,8 @@ __all__ = [
     "package_report_row",
     "parse_csv",
     "parse_csv_lower",
+    "parse_rawfile_manifest",
+    "raw_bundle_row",
     "rawfile_output_path",
     "rawfile_row",
     "read_bundle_probe",
@@ -97,6 +102,7 @@ __all__ = [
     "row_for",
     "safe_name",
     "short_path",
+    "write_prefab_graph",
     "write_csv",
     "xor_with_key",
     "xor_with_tail_key",
